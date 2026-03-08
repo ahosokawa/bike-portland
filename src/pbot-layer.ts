@@ -46,7 +46,7 @@ function classifyConnection(connectionType: string | null | undefined): Tier {
 
 export async function loadPbotData(map: L.Map): Promise<void> {
   try {
-    const res = await fetch('/data/pbot-routes.geojson');
+    const res = await fetch(import.meta.env.BASE_URL + 'data/pbot-routes.geojson');
     if (!res.ok) return;
     const geojson = await res.json();
 

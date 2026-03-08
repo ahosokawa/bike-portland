@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  base: '/bike-portland/',
   root: 'src',
   publicDir: '../public',
   build: {
@@ -18,10 +19,10 @@ export default defineConfig({
         theme_color: '#2d8a4e',
         background_color: '#ffffff',
         display: 'standalone',
-        start_url: '/',
+        start_url: '/bike-portland/',
         icons: [
-          { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
         ],
       },
       workbox: {
