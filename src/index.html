@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#2d8a4e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>PedalPDX</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Search bar (hidden during navigation) -->
+    <div id="search-bar">
+      <input id="search-input" type="text" placeholder="Search address..." autocomplete="off" />
+      <div id="search-results"></div>
+    </div>
+
+    <!-- Map -->
+    <div id="map"></div>
+
+    <!-- Planning controls (hidden during navigation) -->
+    <div id="controls">
+      <button id="btn-start" class="control-btn active" title="Set start">
+        <span class="btn-icon">A</span>
+        <span class="btn-label">Start</span>
+      </button>
+      <button id="btn-end" class="control-btn" title="Set destination">
+        <span class="btn-icon">B</span>
+        <span class="btn-label">End</span>
+      </button>
+      <button id="btn-locate" class="control-btn" title="Use my location">
+        <span class="btn-icon">⊕</span>
+        <span class="btn-label">GPS</span>
+      </button>
+      <button id="btn-clear" class="control-btn" title="Clear all">
+        <span class="btn-icon">✕</span>
+        <span class="btn-label">Clear</span>
+      </button>
+    </div>
+
+    <!-- Route info panel (planning mode) -->
+    <div id="route-panel" class="hidden">
+      <div id="route-summary"></div>
+      <div id="elevation-profile"></div>
+      <button id="btn-go" class="go-btn">Start Navigation</button>
+      <div id="turn-directions"></div>
+    </div>
+
+    <!-- Navigation HUD (replaces everything during nav) -->
+    <div id="nav-hud" class="hidden">
+      <!-- Next turn banner -->
+      <div id="nav-turn-banner">
+        <div id="nav-turn-icon"></div>
+        <div id="nav-turn-info">
+          <div id="nav-turn-distance"></div>
+          <div id="nav-turn-text"></div>
+        </div>
+      </div>
+
+      <!-- Bottom nav stats -->
+      <div id="nav-bottom">
+        <div id="nav-stats">
+          <div class="nav-stat">
+            <span id="nav-remaining-dist" class="nav-stat-value"></span>
+            <span class="nav-stat-label">remaining</span>
+          </div>
+          <div class="nav-stat">
+            <span id="nav-remaining-time" class="nav-stat-value"></span>
+            <span class="nav-stat-label">ETA</span>
+          </div>
+        </div>
+        <button id="btn-stop-nav" class="stop-nav-btn">End</button>
+      </div>
+
+      <!-- Off-route warning -->
+      <div id="nav-off-route" class="hidden">
+        <span>Off route</span>
+      </div>
+    </div>
+
+    <!-- Loading overlay -->
+    <div id="loading" class="hidden">
+      <div class="spinner"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
