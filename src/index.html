@@ -117,9 +117,15 @@
     <!-- Route info panel (planning mode) -->
     <div id="route-panel" class="hidden">
       <div id="route-summary"></div>
-      <div id="elevation-profile"></div>
       <button id="btn-go" class="go-btn">Start Navigation</button>
-      <div id="turn-directions"></div>
+      <button id="btn-route-details" class="route-details-toggle">
+        <span>Route Details</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div id="route-details" class="route-details collapsed">
+        <div id="elevation-profile"></div>
+        <div id="turn-directions"></div>
+      </div>
     </div>
 
     <!-- Navigation HUD (replaces everything during nav) -->

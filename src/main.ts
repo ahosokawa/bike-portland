@@ -31,6 +31,7 @@ import {
 import { saveRoute as dbSaveRoute, getAllRoutes, getRoute, deleteRoute } from './saved-routes';
 import type { NavUpdate } from './navigation';
 import type { AppState, RouteResult, SavedRoute } from './types';
+import { turnIconSvg } from './icons';
 
 const state: AppState = {
   mode: 'start',
@@ -110,6 +111,12 @@ function init(): void {
   // Navigation buttons
   $('btn-go').addEventListener('click', handleStartNav);
   $('btn-stop-nav').addEventListener('click', handleStopNav);
+
+  // Route details toggle
+  $('btn-route-details').addEventListener('click', () => {
+    $('route-details').classList.toggle('collapsed');
+    $('btn-route-details').classList.toggle('expanded');
+  });
 
   // Builder buttons
   $('btn-create-route').addEventListener('click', () => handleEnterBuilder(map));
@@ -328,6 +335,10 @@ function showRoutePanel(route: RouteResult): void {
   const panel = $('route-panel');
   panel.classList.remove('hidden');
 
+  // Start with details collapsed
+  $('route-details').classList.add('collapsed');
+  $('btn-route-details').classList.remove('expanded');
+
   const miles = (route.distance / 1609.34).toFixed(1);
   const minutes = Math.round(route.time / 60);
   const ascendFt = Math.round(route.ascend * 3.281);
@@ -353,7 +364,7 @@ function showRoutePanel(route: RouteResult): void {
     .map(
       (step) => `
       <div class="direction-step">
-        <span class="direction-icon">${step.icon}</span>
+        <span class="direction-icon">${turnIconSvg(step.icon)}</span>
         <span class="direction-text">${step.text}</span>
         <span class="direction-dist">${step.distance > 0 ? formatDist(step.stepDistance) : ''}</span>
       </div>
@@ -599,15 +610,15 @@ function onNavUpdate(update: NavUpdate): void {
 
   const nextInst = update.nextInstruction;
   if (nextInst && !update.arrived) {
-    $('nav-turn-icon').textContent = nextInst.icon;
+    $('nav-turn-icon').innerHTML = turnIconSvg(nextInst.icon);
     $('nav-turn-distance').textContent = formatNavDist(update.distanceToNextTurn);
     $('nav-turn-text').textContent = nextInst.text;
   } else if (update.arrived) {
-    $('nav-turn-icon').textContent = '\uD83C\uDFC1';
+    $('nav-turn-icon').innerHTML = turnIconSvg('arrive');
     $('nav-turn-distance').textContent = 'Arrived';
     $('nav-turn-text').textContent = 'You have reached your destination';
   } else {
-    $('nav-turn-icon').textContent = update.currentInstruction.icon;
+    $('nav-turn-icon').innerHTML = turnIconSvg(update.currentInstruction.icon);
     $('nav-turn-distance').textContent = '';
     $('nav-turn-text').textContent = update.currentInstruction.text;
   }

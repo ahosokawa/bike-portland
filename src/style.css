@@ -266,6 +266,44 @@ html, body, #app {
   text-transform: uppercase;
 }
 
+/* Route details collapsible section */
+.route-details-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 0 2px;
+  border: none;
+  background: transparent;
+  color: #888;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.route-details-toggle svg {
+  transition: transform 0.25s ease;
+}
+
+.route-details-toggle.expanded svg {
+  transform: rotate(180deg);
+}
+
+.route-details {
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+  max-height: 600px;
+  opacity: 1;
+}
+
+.route-details.collapsed {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Go button */
 .go-btn {
   display: block;
@@ -319,9 +357,17 @@ html, body, #app {
 
 .direction-icon {
   flex-shrink: 0;
-  width: 24px;
-  text-align: center;
-  font-size: 16px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #2d8a4e;
+}
+
+.direction-icon svg {
+  width: 18px;
+  height: 18px;
 }
 
 .direction-text {
@@ -367,11 +413,18 @@ html, body, #app {
 }
 
 #nav-turn-icon {
-  font-size: 40px;
-  line-height: 1;
   flex-shrink: 0;
-  width: 50px;
-  text-align: center;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+}
+
+#nav-turn-icon svg {
+  width: 40px;
+  height: 40px;
 }
 
 #nav-turn-info {
@@ -579,7 +632,7 @@ html, body, #app {
   position: absolute;
   bottom: 24px;
   right: 12px;
-  z-index: 1000;
+  z-index: 1010;
 }
 
 #btn-layers {

@@ -116,7 +116,7 @@ function parseInstructions(feature: any): TurnInstruction[] {
       text: message || 'Start',
       distance: cumulativeDist,
       stepDistance: stepDist,
-      icon: i === 1 ? '🚲' : directionIcon(direction),
+      icon: i === 1 ? 'start' : directionIcon(direction),
       latlng: [lat, lon],
     });
   }
@@ -129,7 +129,7 @@ function parseInstructions(feature: any): TurnInstruction[] {
         text: 'Arrive at destination',
         distance: parseFloat(feature.properties?.['track-length']) || cumulativeDist,
         stepDistance: 0,
-        icon: '🏁',
+        icon: 'arrive',
         latlng: [endCoord[1], endCoord[0]],
       });
     }
@@ -146,19 +146,19 @@ function generateBasicInstructions(feature: any): TurnInstruction[] {
   const start = coords[0];
   const end = coords[coords.length - 1];
   return [
-    { text: 'Start your ride', distance: 0, stepDistance: 0, icon: '🚲', latlng: [start[1], start[0]] },
-    { text: 'Follow the route', distance: totalDist, stepDistance: totalDist, icon: '→', latlng: [end[1], end[0]] },
-    { text: 'Arrive at destination', distance: totalDist, stepDistance: 0, icon: '🏁', latlng: [end[1], end[0]] },
+    { text: 'Start your ride', distance: 0, stepDistance: 0, icon: 'start', latlng: [start[1], start[0]] },
+    { text: 'Follow the route', distance: totalDist, stepDistance: totalDist, icon: 'continue', latlng: [end[1], end[0]] },
+    { text: 'Arrive at destination', distance: totalDist, stepDistance: 0, icon: 'arrive', latlng: [end[1], end[0]] },
   ];
 }
 
 function directionIcon(direction: string): string {
   const d = direction?.toUpperCase() || '';
-  if (d.includes('LEFT') || d === 'TL') return '↰';
-  if (d.includes('RIGHT') || d === 'TR') return '↱';
-  if (d.includes('STRAIGHT') || d === 'C') return '↑';
-  if (d.includes('U-TURN') || d === 'TU') return '↩';
-  return '→';
+  if (d.includes('LEFT') || d === 'TL') return 'turn-left';
+  if (d.includes('RIGHT') || d === 'TR') return 'turn-right';
+  if (d.includes('STRAIGHT') || d === 'C') return 'straight';
+  if (d.includes('U-TURN') || d === 'TU') return 'u-turn';
+  return 'continue';
 }
 
 export function computeDistance(coords: [number, number][]): number {
