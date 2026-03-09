@@ -11,7 +11,7 @@ import {
   clearUserPosition,
   setPlanningMarkersVisible,
 } from './map';
-import { computeRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile } from './router';
+import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile } from './router';
 import type { RouteProfileKey } from './router';
 import { initSearch, getActiveInput, reverseGeocode } from './search';
 import { getCurrentPosition } from './geolocation';
@@ -303,7 +303,7 @@ async function handleRoute(): Promise<void> {
   $('loading').classList.remove('hidden');
 
   try {
-    const route = await computeRoute(state.start, state.end);
+    const route = await computeGuidedRoute(state.start, state.end);
     if (requestId !== routeRequestId) return;
     state.route = route;
     displayRoute(route.coordinates);

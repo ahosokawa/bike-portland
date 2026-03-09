@@ -1,13 +1,15 @@
 import type { LatLng } from 'leaflet';
 import type { RouteResult, TurnInstruction, Waypoint } from './types';
+import { findGuidedWaypoints, isGraphReady } from './pbot-graph';
+import type { GuidanceProfile } from './pbot-graph';
 
 const BROUTER_URL = 'https://brouter.de/brouter';
 
 // Profiles ordered from safest to fastest
 export const ROUTE_PROFILES = {
-  'safest': { profile: 'fastbike-verylowtraffic', label: 'Bike Paths', description: 'Dedicated bike paths and trails' },
-  'safe': { profile: 'trekking', label: 'Low Traffic', description: 'Prefer quiet streets and bike lanes' },
-  'balanced': { profile: 'fastbike-lowtraffic', label: 'Direct', description: 'Shortest reasonable route' },
+  'safest': { profile: 'fastbike-verylowtraffic', label: 'Bike Paths', description: 'Prioritize multi-use paths and trails' },
+  'safe': { profile: 'trekking', label: 'Mixed', description: 'Bike lanes, greenways, and low-traffic streets' },
+  'balanced': { profile: 'fastbike-lowtraffic', label: 'Direct', description: 'Shorter distance, less bike infrastructure' },
 } as const;
 
 export type RouteProfileKey = keyof typeof ROUTE_PROFILES;
@@ -72,6 +74,28 @@ export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteRes
   const lonlats = `${start.lng},${start.lat}|${end.lng},${end.lat}`;
   const feature = await fetchRoute(lonlats);
   return parseRouteFeature(feature);
+}
+
+/**
+ * PBOT-guided routing: pathfinds through Portland's bike network to find
+ * intermediate waypoints, then routes through them with BRouter.
+ * Falls back to standard BRouter if the graph isn't ready or points are
+ * too far from the bike network.
+ * Skipped for the "balanced" (Direct) profile.
+ */
+export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<RouteResult> {
+  if (currentProfile !== 'balanced' && isGraphReady()) {
+    const guided = findGuidedWaypoints(start.lat, start.lng, end.lat, end.lng, currentProfile as GuidanceProfile);
+    if (guided && guided.length > 0) {
+      const waypoints: Waypoint[] = [
+        { lat: start.lat, lng: start.lng },
+        ...guided,
+        { lat: end.lat, lng: end.lng },
+      ];
+      return computeRouteMulti(waypoints);
+    }
+  }
+  return computeRoute(start, end);
 }
 
 export async function computeRouteMulti(waypoints: Waypoint[], profileOverride?: string): Promise<RouteResult> {

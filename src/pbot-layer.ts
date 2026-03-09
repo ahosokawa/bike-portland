@@ -1,4 +1,5 @@
 import L from 'leaflet';
+import { buildGraph } from './pbot-graph';
 
 let pbotLayer: L.GeoJSON | null = null;
 let visible = false;
@@ -49,6 +50,9 @@ export async function loadPbotData(map: L.Map): Promise<void> {
     const res = await fetch(import.meta.env.BASE_URL + 'data/pbot-routes.geojson');
     if (!res.ok) return;
     const geojson = await res.json();
+
+    // Build routing graph from PBOT data for guided waypoint routing
+    buildGraph(geojson);
 
     pbotLayer = L.geoJSON(geojson, {
       style: (feature) => {
