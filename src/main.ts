@@ -11,15 +11,26 @@ import {
   clearUserPosition,
   setPlanningMarkersVisible,
 } from './map';
-import { computeRoute, ROUTE_PROFILES, setRouteProfile, getRouteProfile } from './router';
+import { computeRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile } from './router';
 import type { RouteProfileKey } from './router';
-import { initSearch, getActiveInput } from './search';
+import { initSearch, getActiveInput, reverseGeocode } from './search';
 import { getCurrentPosition } from './geolocation';
 import { drawElevationProfile } from './elevation';
 import { loadPbotData, togglePbotLayer } from './pbot-layer';
 import { startNavigation, stopNavigation, isNavigating } from './navigation';
+import {
+  enterBuilderMode,
+  exitBuilderMode,
+  isBuilding,
+  addWaypoint,
+  undoLastWaypoint,
+  clearAllWaypoints,
+  getWaypoints,
+  getLastRoute,
+} from './custom-route-builder';
+import { saveRoute as dbSaveRoute, getAllRoutes, getRoute, deleteRoute } from './saved-routes';
 import type { NavUpdate } from './navigation';
-import type { AppState, RouteResult } from './types';
+import type { AppState, RouteResult, SavedRoute } from './types';
 
 const state: AppState = {
   mode: 'start',
@@ -29,7 +40,7 @@ const state: AppState = {
 };
 
 let routeRequestId = 0;
-let followUser = true; // auto-center map on user during nav
+let followUser = true;
 
 function $(id: string): HTMLElement {
   return document.getElementById(id)!;
@@ -42,46 +53,46 @@ function init(): void {
   loadPbotData(map);
 
   map.on('click', (e: L.LeafletMouseEvent) => {
-    if (isNavigating()) return; // ignore taps during navigation
+    if (isNavigating()) return;
+    if (isBuilding()) {
+      addWaypoint(e.latlng);
+      return;
+    }
     handleMapTap(e.latlng);
   });
 
   document.addEventListener('marker-drag', ((e: CustomEvent) => {
-    if (isNavigating()) return;
+    if (isNavigating() || isBuilding()) return;
     const { type, latlng } = e.detail;
     if (type === 'start') {
       state.start = latlng;
-      updateInputDisplay('start', `${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}`);
+      resolveAndDisplay('start', latlng.lat, latlng.lng);
     } else {
       state.end = latlng;
-      updateInputDisplay('end', `${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}`);
+      resolveAndDisplay('end', latlng.lat, latlng.lng);
     }
     tryRoute();
   }) as EventListener);
 
   // Two-input search: start and end
   initSearch(
-    // onSelectStart
     (lat, lon, displayName) => {
       const latlng = L.latLng(lat, lon);
       getMap().setView(latlng, 15);
       state.start = latlng;
       setStartMarker(latlng);
       updateInputDisplay('start', displayName);
-      // If end is not set, focus it
       if (!state.end) {
         ($('input-end') as HTMLInputElement).focus();
       }
       tryRoute();
     },
-    // onSelectEnd
     (lat, lon, displayName) => {
       const latlng = L.latLng(lat, lon);
       getMap().setView(latlng, 15);
       state.end = latlng;
       setEndMarker(latlng);
       updateInputDisplay('end', displayName);
-      // If start is not set, focus it
       if (!state.start) {
         ($('input-start') as HTMLInputElement).focus();
       }
@@ -91,18 +102,25 @@ function init(): void {
 
   initLayersMenu(map);
 
-  // My Location button
+  // Planning buttons
   $('btn-my-location').addEventListener('click', handleLocate);
-
-  // Clear button
   $('btn-clear').addEventListener('click', handleClear);
-
-  // Swap button
   $('btn-swap').addEventListener('click', handleSwap);
 
   // Navigation buttons
   $('btn-go').addEventListener('click', handleStartNav);
   $('btn-stop-nav').addEventListener('click', handleStopNav);
+
+  // Builder buttons
+  $('btn-create-route').addEventListener('click', () => handleEnterBuilder(map));
+  $('btn-undo-waypoint').addEventListener('click', handleUndoWaypoint);
+  $('btn-clear-waypoints').addEventListener('click', handleClearWaypoints);
+  $('btn-save-route').addEventListener('click', handleSaveRoute);
+  $('btn-exit-builder').addEventListener('click', handleExitBuilder);
+
+  // Saved routes buttons
+  $('btn-saved-routes').addEventListener('click', handleShowSavedRoutes);
+  $('btn-close-saved').addEventListener('click', () => $('saved-routes-panel').classList.add('hidden'));
 
   // During nav, let user drag map to explore, but tap to re-center
   map.on('dragstart', () => {
@@ -113,18 +131,18 @@ function init(): void {
   });
 }
 
+// ========== Layers menu ==========
+
 function initLayersMenu(map: L.Map): void {
   const layersBtn = $('btn-layers');
   const layersPanel = $('layers-panel');
 
-  // Toggle panel
   layersBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     const isOpen = layersPanel.classList.toggle('visible');
     layersBtn.classList.toggle('active', isOpen);
   });
 
-  // Close panel when clicking outside
   document.addEventListener('click', (e) => {
     if (!(e.target as Element).closest('#layers-menu-wrapper')) {
       layersPanel.classList.remove('visible');
@@ -132,7 +150,7 @@ function initLayersMenu(map: L.Map): void {
     }
   });
 
-  // Build profile options
+  // Profile options
   const profileContainer = $('profile-options');
   profileContainer.innerHTML = (Object.entries(ROUTE_PROFILES) as [RouteProfileKey, typeof ROUTE_PROFILES[RouteProfileKey]][])
     .map(([key, val]) =>
@@ -166,49 +184,60 @@ function initLayersMenu(map: L.Map): void {
   });
 }
 
+function closeLayersMenu(): void {
+  $('layers-panel').classList.remove('visible');
+  $('btn-layers').classList.remove('active');
+}
+
+// ========== Planning mode ==========
+
 function updateInputDisplay(which: 'start' | 'end', text: string): void {
   const inputId = which === 'start' ? 'input-start' : 'input-end';
   ($(inputId) as HTMLInputElement).value = text;
 }
 
-/** Handle map tap — intelligently pick which point to set */
-function handleMapTap(latlng: L.LatLng): void {
-  const coordLabel = `${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}`;
+/** Show coords immediately, then resolve to a street address. */
+function resolveAndDisplay(which: 'start' | 'end', lat: number, lng: number): void {
+  updateInputDisplay(which, `${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+  reverseGeocode(lat, lng).then(address => {
+    // Only update if the point hasn't changed since we fired the request
+    const current = which === 'start' ? state.start : state.end;
+    if (current && Math.abs(current.lat - lat) < 0.0001 && Math.abs(current.lng - lng) < 0.0001) {
+      updateInputDisplay(which, address);
+    }
+  });
+}
 
-  // Check which input is currently focused
+function handleMapTap(latlng: L.LatLng): void {
   const activeEl = document.activeElement;
   const startInput = $('input-start');
   const endInput = $('input-end');
 
   if (activeEl === startInput) {
-    // Start input is focused — set start
     state.start = latlng;
     setStartMarker(latlng);
-    updateInputDisplay('start', coordLabel);
+    resolveAndDisplay('start', latlng.lat, latlng.lng);
     startInput.blur();
     if (!state.end) (endInput as HTMLInputElement).focus();
   } else if (activeEl === endInput) {
-    // End input is focused — set end
     state.end = latlng;
     setEndMarker(latlng);
-    updateInputDisplay('end', coordLabel);
+    resolveAndDisplay('end', latlng.lat, latlng.lng);
     endInput.blur();
     if (!state.start) (startInput as HTMLInputElement).focus();
   } else {
-    // No input focused — fill the first empty field, prefer end
     if (!state.end) {
       state.end = latlng;
       setEndMarker(latlng);
-      updateInputDisplay('end', coordLabel);
+      resolveAndDisplay('end', latlng.lat, latlng.lng);
     } else if (!state.start) {
       state.start = latlng;
       setStartMarker(latlng);
-      updateInputDisplay('start', coordLabel);
+      resolveAndDisplay('start', latlng.lat, latlng.lng);
     } else {
-      // Both set — replace destination
       state.end = latlng;
       setEndMarker(latlng);
-      updateInputDisplay('end', coordLabel);
+      resolveAndDisplay('end', latlng.lat, latlng.lng);
     }
   }
 
@@ -230,8 +259,7 @@ async function handleLocate(): Promise<void> {
     getMap().setView(latlng, 15);
     state.start = latlng;
     setStartMarker(latlng);
-    updateInputDisplay('start', 'My Location');
-    // Focus destination if empty
+    resolveAndDisplay('start', latlng.lat, latlng.lng);
     if (!state.end) {
       ($('input-end') as HTMLInputElement).focus();
     }
@@ -248,14 +276,12 @@ function handleSwap(): void {
   state.start = state.end;
   state.end = tempLatlng;
 
-  // Swap input text
   const startInput = $('input-start') as HTMLInputElement;
   const endInput = $('input-end') as HTMLInputElement;
   const tempText = startInput.value;
   startInput.value = endInput.value;
   endInput.value = tempText;
 
-  // Update markers
   clearMarkers();
   if (state.start) setStartMarker(state.start);
   if (state.end) setEndMarker(state.end);
@@ -337,20 +363,208 @@ function showRoutePanel(route: RouteResult): void {
   $('turn-directions').innerHTML = directionsHtml;
 }
 
+// ========== Custom route builder ==========
+
+function handleEnterBuilder(map: L.Map): void {
+  closeLayersMenu();
+  handleClear();
+
+  document.body.classList.add('custom-building');
+  $('builder-toolbar').classList.remove('hidden');
+  ($('btn-save-route') as HTMLButtonElement).disabled = true;
+  $('builder-status').textContent = 'Tap map to add points';
+
+  enterBuilderMode(
+    map,
+    onBuilderRouteComputed,
+    onBuilderWaypointsChanged,
+  );
+}
+
+function handleExitBuilder(): void {
+  exitBuilderMode();
+  document.body.classList.remove('custom-building');
+  $('builder-toolbar').classList.add('hidden');
+}
+
+function onBuilderRouteComputed(route: RouteResult): void {
+  // Just enable save — the builder draws the route on the map itself.
+  // Do NOT show route panel or set state.route during building.
+  ($('btn-save-route') as HTMLButtonElement).disabled = false;
+  const miles = (route.distance / 1609.34).toFixed(1);
+  $('builder-status').textContent = `${getWaypoints().length} points \u00B7 ${miles} mi`;
+}
+
+function onBuilderWaypointsChanged(count: number): void {
+  if (count === 0) {
+    $('builder-status').textContent = 'Tap map to add points';
+    ($('btn-save-route') as HTMLButtonElement).disabled = true;
+  } else if (count === 1) {
+    $('builder-status').textContent = '1 point \u2014 add more';
+    ($('btn-save-route') as HTMLButtonElement).disabled = true;
+  } else {
+    $('builder-status').textContent = `${count} points`;
+    // Save stays disabled until route is computed (callback above enables it)
+  }
+}
+
+function handleUndoWaypoint(): void {
+  undoLastWaypoint();
+}
+
+function handleClearWaypoints(): void {
+  clearAllWaypoints();
+  clearRoute();
+  state.route = null;
+  $('route-panel').classList.add('hidden');
+}
+
+async function handleSaveRoute(): Promise<void> {
+  const waypoints = getWaypoints();
+  const route = getLastRoute();
+  if (waypoints.length < 2 || !route) return;
+
+  const name = prompt('Name this route:');
+  if (!name?.trim()) return;
+
+  const saved: SavedRoute = {
+    id: crypto.randomUUID(),
+    name: name.trim(),
+    waypoints,
+    distance: route.distance,
+    profileKey: 'shortest',
+    cachedRoute: route,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  await dbSaveRoute(saved);
+  showToast('Route saved');
+
+  // Exit builder and load the route for navigation
+  exitBuilderMode();
+  document.body.classList.remove('custom-building');
+  $('builder-toolbar').classList.add('hidden');
+
+  // Show the saved route ready for navigation
+  state.route = route;
+  const first = waypoints[0];
+  const last = waypoints[waypoints.length - 1];
+  state.start = L.latLng(first.lat, first.lng);
+  state.end = L.latLng(last.lat, last.lng);
+  setStartMarker(state.start);
+  setEndMarker(state.end);
+  displayRoute(route.coordinates);
+  showRoutePanel(route);
+  resolveAndDisplay('start', first.lat, first.lng);
+  resolveAndDisplay('end', last.lat, last.lng);
+}
+
+// ========== Saved routes ==========
+
+async function handleShowSavedRoutes(): Promise<void> {
+  closeLayersMenu();
+  const routes = await getAllRoutes();
+  const list = $('saved-routes-list');
+
+  if (routes.length === 0) {
+    list.innerHTML = '<div class="empty-state">No saved routes yet</div>';
+  } else {
+    list.innerHTML = routes.map(r => `
+      <div class="saved-route-item" data-id="${r.id}">
+        <div class="saved-route-info">
+          <span class="saved-route-name">${escapeHtml(r.name)}</span>
+          <span class="saved-route-meta">${(r.distance / 1609.34).toFixed(1)} mi &middot; ${new Date(r.createdAt).toLocaleDateString()}</span>
+        </div>
+        <button class="saved-route-delete" data-id="${r.id}" aria-label="Delete route">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    `).join('');
+
+    // Wire up click handlers
+    list.querySelectorAll('.saved-route-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        // Don't load route if delete button was clicked
+        if ((e.target as Element).closest('.saved-route-delete')) return;
+        const id = (item as HTMLElement).dataset.id!;
+        handleLoadSavedRoute(id);
+      });
+    });
+
+    list.querySelectorAll('.saved-route-delete').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = (btn as HTMLElement).dataset.id!;
+        await deleteRoute(id);
+        // Refresh list
+        handleShowSavedRoutes();
+        showToast('Route deleted');
+      });
+    });
+  }
+
+  $('saved-routes-panel').classList.remove('hidden');
+}
+
+async function handleLoadSavedRoute(id: string): Promise<void> {
+  const saved = await getRoute(id);
+  if (!saved) return;
+
+  $('saved-routes-panel').classList.add('hidden');
+  handleClear();
+  $('loading').classList.remove('hidden');
+
+  const first = saved.waypoints[0];
+  const last = saved.waypoints[saved.waypoints.length - 1];
+
+  let route: RouteResult;
+
+  try {
+    // Try fresh computation for latest road data & instructions
+    route = await computeRouteMulti(saved.waypoints, saved.profileKey);
+    // Update the cache with the fresh result
+    saved.cachedRoute = route;
+    saved.updatedAt = Date.now();
+    dbSaveRoute(saved); // fire-and-forget update
+  } catch {
+    // Offline or BRouter unavailable — fall back to cached route
+    if (saved.cachedRoute) {
+      route = saved.cachedRoute;
+      showToast('Loaded from cache (offline)');
+    } else {
+      alert('Could not load route. No cached version available — connect to the internet and try again.');
+      $('loading').classList.add('hidden');
+      return;
+    }
+  }
+
+  state.route = route;
+  state.start = L.latLng(first.lat, first.lng);
+  state.end = L.latLng(last.lat, last.lng);
+
+  setStartMarker(state.start);
+  setEndMarker(state.end);
+  displayRoute(route.coordinates);
+  showRoutePanel(route);
+
+  resolveAndDisplay('start', first.lat, first.lng);
+  resolveAndDisplay('end', last.lat, last.lng);
+
+  $('loading').classList.add('hidden');
+}
+
 // ========== Navigation mode ==========
 
 function handleStartNav(): void {
   if (!state.route) return;
 
-  // iOS Safari requires a user gesture to enable speechSynthesis
-  // Trigger a silent utterance to unlock it
   if ('speechSynthesis' in window) {
     const unlock = new SpeechSynthesisUtterance('');
     unlock.volume = 0;
     speechSynthesis.speak(unlock);
   }
 
-  // Enter navigation mode
   document.body.classList.add('navigating');
   $('nav-hud').classList.remove('hidden');
   setPlanningMarkersVisible(false);
@@ -367,7 +581,6 @@ function handleStopNav(): void {
   clearUserPosition();
   setPlanningMarkersVisible(true);
 
-  // Re-fit route on map
   if (state.route) {
     displayRoute(state.route.coordinates);
   }
@@ -376,7 +589,6 @@ function handleStopNav(): void {
 let offRouteTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function onNavUpdate(update: NavUpdate): void {
-  // Update user position on map
   updateUserPosition(
     update.userLat,
     update.userLng,
@@ -385,7 +597,6 @@ function onNavUpdate(update: NavUpdate): void {
     followUser,
   );
 
-  // Update turn banner
   const nextInst = update.nextInstruction;
   if (nextInst && !update.arrived) {
     $('nav-turn-icon').textContent = nextInst.icon;
@@ -401,17 +612,13 @@ function onNavUpdate(update: NavUpdate): void {
     $('nav-turn-text').textContent = update.currentInstruction.text;
   }
 
-  // Update stats
   $('nav-remaining-dist').textContent = formatDist(update.distanceRemaining);
   $('nav-remaining-time').textContent = formatTime(update.timeRemaining);
 
-  // Off-route indicator
   if (update.offRoute) {
     $('nav-off-route').classList.remove('hidden');
-    // Clear any existing timeout
     if (offRouteTimeout) clearTimeout(offRouteTimeout);
   } else {
-    // Slight delay before hiding to avoid flicker
     if (!$('nav-off-route').classList.contains('hidden')) {
       if (offRouteTimeout) clearTimeout(offRouteTimeout);
       offRouteTimeout = setTimeout(() => {
@@ -425,7 +632,7 @@ function onNavOffRoute(): void {
   // Could trigger re-routing here in the future
 }
 
-// ========== Formatting ==========
+// ========== Utilities ==========
 
 function formatDist(meters: number): string {
   if (meters < 160) return `${Math.round(meters)} m`;
@@ -449,6 +656,20 @@ function formatTime(seconds: number): string {
   const hrs = Math.floor(mins / 60);
   const rem = mins % 60;
   return `${hrs}h ${rem}m`;
+}
+
+function escapeHtml(str: string): string {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function showToast(message: string): void {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2000);
 }
 
 document.addEventListener('DOMContentLoaded', init);

@@ -754,9 +754,282 @@ html, body, #app {
   transform: translateX(18px);
 }
 
+/* ========== Layers menu action buttons ========== */
+.layers-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #222;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  text-align: left;
+}
+
+.layers-action-btn:active {
+  background: #f0f0f0;
+}
+
+.layers-action-btn svg {
+  color: #2d8a4e;
+  flex-shrink: 0;
+}
+
+/* ========== Custom route builder toolbar ========== */
+#builder-toolbar {
+  position: absolute;
+  bottom: 24px;
+  left: 12px;
+  right: 12px;
+  z-index: 1000;
+  padding-bottom: max(0px, env(safe-area-inset-bottom));
+}
+
+#builder-toolbar.hidden {
+  display: none;
+}
+
+.builder-toolbar-inner {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+#builder-status {
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.builder-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.builder-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  border: 1.5px solid #ddd;
+  border-radius: 8px;
+  background: white;
+  color: #555;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 10px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.builder-btn:active {
+  background: #f0f0f0;
+}
+
+.builder-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.builder-btn:disabled:active {
+  background: white;
+}
+
+.builder-btn-primary {
+  background: #2d8a4e;
+  color: white;
+  border-color: #2d8a4e;
+}
+
+.builder-btn-primary:active {
+  background: #236b3d;
+}
+
+.builder-btn-primary:disabled {
+  background: #2d8a4e;
+  border-color: #2d8a4e;
+}
+
+/* ========== Waypoint markers ========== */
+.waypoint-marker {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #3498db;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  border: 2px solid white;
+}
+
+/* ========== Saved routes panel ========== */
+#saved-routes-panel {
+  position: absolute;
+  bottom: 24px;
+  left: 12px;
+  right: 12px;
+  z-index: 1001;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  max-height: 55vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#saved-routes-panel.hidden {
+  display: none;
+}
+
+.saved-routes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #eee;
+  flex-shrink: 0;
+}
+
+.saved-routes-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #222;
+}
+
+#saved-routes-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.saved-route-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid #f5f5f5;
+  transition: background 0.1s;
+  gap: 10px;
+}
+
+.saved-route-item:last-child {
+  border-bottom: none;
+}
+
+.saved-route-item:active {
+  background: #f0f7f2;
+}
+
+.saved-route-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.saved-route-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #222;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-route-meta {
+  font-size: 12px;
+  color: #888;
+}
+
+.saved-route-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: #bbb;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.saved-route-delete:active {
+  background: #fee;
+  color: #e74c3c;
+}
+
+.empty-state {
+  padding: 28px 16px;
+  text-align: center;
+  color: #999;
+  font-size: 14px;
+}
+
+/* ========== Toast notification ========== */
+.toast {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a2e;
+  color: white;
+  padding: 10px 24px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 3000;
+  pointer-events: none;
+  animation: toast-in 0.25s ease, toast-out 0.25s ease 1.5s forwards;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+/* ========== Builder mode: hide planning UI ========== */
+body.custom-building #route-planner,
+body.custom-building #layers-menu-wrapper {
+  display: none !important;
+}
+
 /* ========== Navigation mode: hide planning UI ========== */
 body.navigating #route-planner,
 body.navigating #route-panel,
-body.navigating #layers-menu-wrapper {
+body.navigating #layers-menu-wrapper,
+body.navigating #builder-toolbar,
+body.navigating #saved-routes-panel {
   display: none !important;
 }

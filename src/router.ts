@@ -1,5 +1,5 @@
 import type { LatLng } from 'leaflet';
-import type { RouteResult, TurnInstruction } from './types';
+import type { RouteResult, TurnInstruction, Waypoint } from './types';
 
 const BROUTER_URL = 'https://brouter.de/brouter';
 
@@ -22,12 +22,13 @@ export function getRouteProfile(): RouteProfileKey {
   return currentProfile;
 }
 
-export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteResult> {
-  const lonlats = `${start.lng},${start.lat}|${end.lng},${end.lat}`;
-  const profileConfig = ROUTE_PROFILES[currentProfile];
+// ========== Shared fetch + parse ==========
+
+async function fetchRoute(lonlats: string, profileOverride?: string): Promise<any> {
+  const profile = profileOverride || ROUTE_PROFILES[currentProfile].profile;
   const params = new URLSearchParams({
     lonlats,
-    profile: profileConfig.profile,
+    profile,
     alternativeidx: '0',
     format: 'geojson',
   });
@@ -42,7 +43,10 @@ export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteRes
   if (!feature) {
     throw new Error('No route found');
   }
+  return feature;
+}
 
+function parseRouteFeature(feature: any): RouteResult {
   const coords: [number, number][] = feature.geometry.coordinates.map(
     (c: number[]) => [c[1], c[0]] as [number, number]
   );
@@ -53,7 +57,7 @@ export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteRes
 
   const props = feature.properties;
   const distance = parseFloat(props['track-length']) || computeDistance(coords);
-  const time = parseFloat(props['total-time']) || Math.round(distance / 4.2); // ~15 km/h fallback
+  const time = parseFloat(props['total-time']) || Math.round(distance / 4.2);
   const ascend = parseFloat(props['filtered ascend']) || 0;
   const descend = parseFloat(props['filtered descend']) || 0;
 
@@ -61,6 +65,23 @@ export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteRes
 
   return { coordinates: coords, distance, time, elevations, ascend, descend, instructions };
 }
+
+// ========== Public API ==========
+
+export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteResult> {
+  const lonlats = `${start.lng},${start.lat}|${end.lng},${end.lat}`;
+  const feature = await fetchRoute(lonlats);
+  return parseRouteFeature(feature);
+}
+
+export async function computeRouteMulti(waypoints: Waypoint[], profileOverride?: string): Promise<RouteResult> {
+  if (waypoints.length < 2) throw new Error('Need at least 2 waypoints');
+  const lonlats = waypoints.map(w => `${w.lng},${w.lat}`).join('|');
+  const feature = await fetchRoute(lonlats, profileOverride);
+  return parseRouteFeature(feature);
+}
+
+// ========== Instructions parsing ==========
 
 function parseInstructions(feature: any): TurnInstruction[] {
   const instructions: TurnInstruction[] = [];
@@ -70,8 +91,6 @@ function parseInstructions(feature: any): TurnInstruction[] {
     return generateBasicInstructions(feature);
   }
 
-  // BRouter messages: headers row then data rows
-  // Typical headers: Longitude, Latitude, Elevation, Distance, CostPerKm, ElevCost, TurnCost, NodeCost, InitialCost, WayTags, NodeTags, Time, Energy, Direction, Message
   const headers: string[] = messages[0];
   const lonIdx = headers.indexOf('Longitude');
   const latIdx = headers.indexOf('Latitude');
@@ -91,7 +110,7 @@ function parseInstructions(feature: any): TurnInstruction[] {
 
     cumulativeDist += stepDist;
 
-    if (!message && i > 1) continue; // skip empty mid-route messages, keep first (start)
+    if (!message && i > 1) continue;
 
     instructions.push({
       text: message || 'Start',
@@ -102,7 +121,6 @@ function parseInstructions(feature: any): TurnInstruction[] {
     });
   }
 
-  // Ensure last instruction is "arrive"
   if (instructions.length > 0) {
     const last = instructions[instructions.length - 1];
     if (!last.text.toLowerCase().includes('arrive') && !last.text.toLowerCase().includes('destination')) {

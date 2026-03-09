@@ -1,6 +1,7 @@
 import type { SearchResult } from './types';
 
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 const PORTLAND_BBOX = '-122.84,45.42,-122.47,45.65';
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -121,5 +122,39 @@ async function searchAddress(
     resultsDiv.classList.add('visible');
   } catch {
     // silently fail — search is a convenience
+  }
+}
+
+export async function reverseGeocode(lat: number, lng: number): Promise<string> {
+  const params = new URLSearchParams({
+    lat: lat.toString(),
+    lon: lng.toString(),
+    format: 'json',
+    zoom: '18',
+    addressdetails: '1',
+  });
+
+  try {
+    const res = await fetch(`${NOMINATIM_REVERSE_URL}?${params}`, {
+      headers: { 'Accept-Language': 'en' },
+    });
+    const data = await res.json();
+    if (data.error) return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+    const addr = data.address || {};
+
+    // Build a short, useful label like "123 NW Everett St"
+    if (addr.house_number && addr.road) {
+      return `${addr.house_number} ${addr.road}`;
+    }
+    if (addr.road) return addr.road;
+    if (addr.pedestrian) return addr.pedestrian;
+    if (addr.path) return addr.path;
+    if (addr.cycleway) return addr.cycleway;
+
+    // Fallback to first part of display_name
+    return data.display_name?.split(',')[0] || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  } catch {
+    return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
   }
 }

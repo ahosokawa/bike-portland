@@ -32,3 +32,19 @@ export interface AppState {
   end: LatLng | null;
   route: RouteResult | null;
 }
+
+export interface Waypoint {
+  lat: number;
+  lng: number;
+}
+
+export interface SavedRoute {
+  id: string;
+  name: string;
+  waypoints: Waypoint[];
+  distance: number;       // meters
+  profileKey: string;     // which BRouter profile was used
+  cachedRoute?: RouteResult; // full computed route for offline use
+  createdAt: number;
+  updatedAt: number;
+}
