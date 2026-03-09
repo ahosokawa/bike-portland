@@ -21,36 +21,169 @@ html, body, #app {
   z-index: 1;
 }
 
-/* ========== Search bar ========== */
-#search-bar {
+/* ========== Route planner card ========== */
+#route-planner {
   position: absolute;
-  top: 12px;
-  left: 12px;
-  right: 12px;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 1000;
-  max-width: 400px;
+  padding: 12px;
+  padding-top: max(12px, env(safe-area-inset-top));
+  pointer-events: none;
 }
 
-#search-input {
-  width: 100%;
-  padding: 12px 16px;
+.route-planner-card {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+  max-width: 460px;
+  pointer-events: auto;
+  position: relative;
+}
+
+.route-inputs {
+  display: flex;
+  align-items: stretch;
+  padding: 10px 6px 10px 12px;
+  gap: 8px;
+}
+
+/* Dot indicators (start/end) with connecting line */
+.route-dots {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex-shrink: 0;
+  padding: 13px 0;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-start {
+  background: #2d8a4e;
+  box-shadow: 0 0 0 3px rgba(45, 138, 78, 0.2);
+}
+
+.dot-end {
+  background: #d63031;
+  box-shadow: 0 0 0 3px rgba(214, 48, 49, 0.2);
+}
+
+.dot-line {
+  flex: 1;
+  width: 2px;
+  background: #d0d0d0;
+  min-height: 10px;
+  margin: 3px 0;
+}
+
+/* Input fields container */
+.route-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.route-field-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.route-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 8px;
+  border: none;
+  background: #f5f5f5;
+  border-radius: 8px;
+  font-size: 15px;
+  outline: none;
+  color: #222;
+  transition: background 0.15s;
+}
+
+.route-input::placeholder {
+  color: #999;
+}
+
+.route-input:focus {
+  background: #eef6f0;
+  box-shadow: inset 0 0 0 1.5px #2d8a4e;
+}
+
+.field-divider {
+  height: 1px;
+  background: #eee;
+  margin: 4px 0;
+}
+
+/* Action buttons inside fields */
+.field-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #666;
+  cursor: pointer;
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, color 0.15s;
+}
+
+.field-action-btn:active {
+  background: #eee;
+}
+
+.field-action-btn.locating {
+  color: #2d8a4e;
+  animation: pulse-btn 1s ease-in-out infinite;
+}
+
+@keyframes pulse-btn {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Swap button */
+.swap-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  flex-shrink: 0;
   border: none;
   border-radius: 8px;
-  background: white;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  font-size: 16px;
-  outline: none;
+  background: transparent;
+  color: #666;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, color 0.15s;
+  align-self: center;
 }
 
-#search-input:focus {
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+.swap-btn:active {
+  background: #eee;
+  color: #2d8a4e;
 }
 
+/* Search results dropdown */
 #search-results {
-  background: white;
-  border-radius: 0 0 8px 8px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
-  max-height: 200px;
+  border-top: 1px solid #eee;
+  max-height: 220px;
   overflow-y: auto;
   display: none;
 }
@@ -60,81 +193,39 @@ html, body, #app {
 }
 
 .search-result-item {
-  padding: 10px 16px;
+  padding: 12px 16px;
   cursor: pointer;
-  font-size: 14px;
-  border-bottom: 1px solid #eee;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-bottom: 1px solid #f5f5f5;
+  transition: background 0.1s;
 }
 
 .search-result-item:last-child {
   border-bottom: none;
+  border-radius: 0 0 12px 12px;
 }
 
 .search-result-item:active {
   background: #f0f0f0;
 }
 
-/* ========== Bottom controls (planning mode) ========== */
-#controls {
-  position: absolute;
-  bottom: 24px;
-  left: 12px;
-  right: 12px;
-  z-index: 1000;
-  display: flex;
-  gap: 8px;
-  justify-content: center;
+.result-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #222;
 }
 
-.control-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 8px 14px;
-  border: none;
-  border-radius: 12px;
-  background: white;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  cursor: pointer;
+.result-address {
   font-size: 12px;
-  color: #333;
-  -webkit-tap-highlight-color: transparent;
-  transition: background 0.15s, transform 0.1s;
-}
-
-.control-btn:active {
-  transform: scale(0.95);
-}
-
-.control-btn.active {
-  background: #2d8a4e;
-  color: white;
-}
-
-.control-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.control-btn:disabled:active {
-  transform: none;
-}
-
-.btn-icon {
-  font-size: 20px;
-  font-weight: bold;
-  line-height: 1;
-}
-
-.btn-label {
-  font-size: 11px;
-  margin-top: 2px;
+  color: #888;
 }
 
 /* ========== Route panel (planning mode) ========== */
 #route-panel {
   position: absolute;
-  bottom: 110px;
+  bottom: 56px;
   left: 12px;
   right: 12px;
   z-index: 1000;
@@ -469,9 +560,6 @@ html, body, #app {
   font-size: 14px;
   color: white;
   box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-  position: relative;
-  left: -16px;
-  top: -32px;
 }
 
 .custom-marker span {
@@ -486,66 +574,189 @@ html, body, #app {
   background: #d63031;
 }
 
-/* ========== PBOT layer toggle ========== */
-#layer-toggle {
+/* ========== Layers menu ========== */
+#layers-menu-wrapper {
   position: absolute;
-  top: 64px;
+  bottom: 24px;
   right: 12px;
   z-index: 1000;
-  background: white;
+}
+
+#btn-layers {
+  width: 44px;
+  height: 44px;
   border: none;
-  border-radius: 8px;
-  padding: 8px 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  font-size: 12px;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-#layer-toggle.active {
-  background: #2d8a4e;
-  color: white;
-}
-
-/* ========== Profile selector ========== */
-#profile-selector {
-  position: absolute;
-  bottom: 86px;
-  left: 12px;
-  right: 12px;
-  z-index: 1000;
-  display: flex;
-  gap: 4px;
-  justify-content: center;
-}
-
-.profile-btn {
-  padding: 6px 14px;
-  border: 2px solid #2d8a4e;
-  border-radius: 20px;
+  border-radius: 50%;
   background: white;
-  color: #2d8a4e;
-  font-size: 12px;
-  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555;
   -webkit-tap-highlight-color: transparent;
   transition: background 0.15s, color 0.15s;
 }
 
-.profile-btn.active {
+#btn-layers.active {
   background: #2d8a4e;
   color: white;
 }
 
-.profile-btn:active {
+#btn-layers:active {
   transform: scale(0.95);
 }
 
+#layers-panel {
+  display: none;
+  position: absolute;
+  bottom: 54px;
+  right: 0;
+  width: 220px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+#layers-panel.visible {
+  display: block;
+}
+
+.layers-section {
+  padding: 12px 14px;
+}
+
+.layers-section + .layers-section {
+  border-top: 1px solid #eee;
+}
+
+.layers-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #999;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+/* Profile options */
+.profile-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.profile-option:active {
+  background: #f0f0f0;
+}
+
+.profile-radio {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #ccc;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s;
+}
+
+.profile-option.active .profile-radio {
+  border-color: #2d8a4e;
+}
+
+.profile-radio-inner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2d8a4e;
+  transform: scale(0);
+  transition: transform 0.15s;
+}
+
+.profile-option.active .profile-radio-inner {
+  transform: scale(1);
+}
+
+.profile-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.profile-label-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #222;
+}
+
+.profile-label-desc {
+  font-size: 11px;
+  color: #999;
+}
+
+/* Toggle row for overlays */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 6px;
+  cursor: pointer;
+  border-radius: 8px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.toggle-row:active {
+  background: #f0f0f0;
+}
+
+.toggle-row-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #222;
+}
+
+.toggle-switch {
+  width: 40px;
+  height: 22px;
+  background: #ddd;
+  border-radius: 11px;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.toggle-switch.on {
+  background: #2d8a4e;
+}
+
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: white;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 0.2s;
+}
+
+.toggle-switch.on::after {
+  transform: translateX(18px);
+}
+
 /* ========== Navigation mode: hide planning UI ========== */
-body.navigating #search-bar,
-body.navigating #controls,
+body.navigating #route-planner,
 body.navigating #route-panel,
-body.navigating #profile-selector,
-body.navigating #layer-toggle {
+body.navigating #layers-menu-wrapper {
   display: none !important;
 }

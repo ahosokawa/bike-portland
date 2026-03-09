@@ -4,12 +4,26 @@ const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const PORTLAND_BBOX = '-122.84,45.42,-122.47,45.65';
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let activeInput: 'start' | 'end' = 'end';
 
-export function initSearch(onSelect: (lat: number, lon: number) => void): void {
-  const input = document.getElementById('search-input') as HTMLInputElement;
+export function getActiveInput(): 'start' | 'end' {
+  return activeInput;
+}
+
+export function setActiveInput(which: 'start' | 'end'): void {
+  activeInput = which;
+}
+
+export function initSearch(
+  onSelectStart: (lat: number, lon: number, displayName: string) => void,
+  onSelectEnd: (lat: number, lon: number, displayName: string) => void,
+): void {
+  const inputStart = document.getElementById('input-start') as HTMLInputElement;
+  const inputEnd = document.getElementById('input-end') as HTMLInputElement;
   const resultsDiv = document.getElementById('search-results')!;
 
-  input.addEventListener('input', () => {
+  function handleInput(input: HTMLInputElement, which: 'start' | 'end'): void {
+    const onSelect = which === 'start' ? onSelectStart : onSelectEnd;
     const query = input.value.trim();
     if (query.length < 3) {
       resultsDiv.classList.remove('visible');
@@ -17,17 +31,36 @@ export function initSearch(onSelect: (lat: number, lon: number) => void): void {
     }
 
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => searchAddress(query, resultsDiv, onSelect), 400);
+    debounceTimer = setTimeout(() => searchAddress(query, resultsDiv, input, onSelect), 400);
+  }
+
+  inputStart.addEventListener('input', () => {
+    activeInput = 'start';
+    handleInput(inputStart, 'start');
+  });
+  inputEnd.addEventListener('input', () => {
+    activeInput = 'end';
+    handleInput(inputEnd, 'end');
   });
 
-  input.addEventListener('focus', () => {
-    if (resultsDiv.children.length > 0) {
+  inputStart.addEventListener('focus', () => {
+    activeInput = 'start';
+    inputStart.select();
+    if (resultsDiv.children.length > 0 && resultsDiv.dataset.for === 'start') {
+      resultsDiv.classList.add('visible');
+    }
+  });
+
+  inputEnd.addEventListener('focus', () => {
+    activeInput = 'end';
+    inputEnd.select();
+    if (resultsDiv.children.length > 0 && resultsDiv.dataset.for === 'end') {
       resultsDiv.classList.add('visible');
     }
   });
 
   document.addEventListener('click', (e) => {
-    if (!(e.target as Element).closest('#search-bar')) {
+    if (!(e.target as Element).closest('#route-planner')) {
       resultsDiv.classList.remove('visible');
     }
   });
@@ -36,7 +69,8 @@ export function initSearch(onSelect: (lat: number, lon: number) => void): void {
 async function searchAddress(
   query: string,
   resultsDiv: HTMLElement,
-  onSelect: (lat: number, lon: number) => void,
+  input: HTMLInputElement,
+  onSelect: (lat: number, lon: number, displayName: string) => void,
 ): Promise<void> {
   const params = new URLSearchParams({
     q: query,
@@ -54,6 +88,7 @@ async function searchAddress(
     const results: SearchResult[] = await res.json();
 
     resultsDiv.innerHTML = '';
+    resultsDiv.dataset.for = activeInput;
     if (results.length === 0) {
       resultsDiv.classList.remove('visible');
       return;
@@ -62,12 +97,24 @@ async function searchAddress(
     for (const r of results) {
       const item = document.createElement('div');
       item.className = 'search-result-item';
-      item.textContent = r.display_name;
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'result-name';
+      nameSpan.textContent = r.display_name.split(',')[0];
+
+      const addrSpan = document.createElement('span');
+      addrSpan.className = 'result-address';
+      addrSpan.textContent = r.display_name.split(',').slice(1, 3).join(',').trim();
+
+      item.appendChild(nameSpan);
+      item.appendChild(addrSpan);
+
       item.addEventListener('click', () => {
-        const input = document.getElementById('search-input') as HTMLInputElement;
-        input.value = r.display_name.split(',')[0];
+        const shortName = r.display_name.split(',')[0];
+        input.value = shortName;
         resultsDiv.classList.remove('visible');
-        onSelect(parseFloat(String(r.lat)), parseFloat(String(r.lon)));
+        onSelect(parseFloat(String(r.lat)), parseFloat(String(r.lon)), shortName);
+        input.blur();
       });
       resultsDiv.appendChild(item);
     }

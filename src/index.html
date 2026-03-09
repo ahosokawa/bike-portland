@@ -12,32 +12,62 @@
 </head>
 <body>
   <div id="app">
-    <!-- Search bar (hidden during navigation) -->
-    <div id="search-bar">
-      <input id="search-input" type="text" placeholder="Search address..." autocomplete="off" />
-      <div id="search-results"></div>
+    <!-- Route planner card (hidden during navigation) -->
+    <div id="route-planner">
+      <div class="route-planner-card">
+        <div class="route-inputs">
+          <!-- Dot indicators with connecting line -->
+          <div class="route-dots">
+            <div class="dot dot-start"></div>
+            <div class="dot-line"></div>
+            <div class="dot dot-end"></div>
+          </div>
+          <!-- Input fields -->
+          <div class="route-fields">
+            <div class="route-field-row">
+              <input id="input-start" class="route-input" type="text" placeholder="Choose start location" autocomplete="off" />
+              <button id="btn-my-location" class="field-action-btn" title="Use my location" aria-label="Use my location">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2"/></svg>
+              </button>
+            </div>
+            <div class="field-divider"></div>
+            <div class="route-field-row">
+              <input id="input-end" class="route-input" type="text" placeholder="Choose destination" autocomplete="off" />
+              <button id="btn-clear" class="field-action-btn" title="Clear route" aria-label="Clear route">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+          </div>
+          <!-- Swap button -->
+          <button id="btn-swap" class="swap-btn" title="Swap start and destination" aria-label="Swap start and destination">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+          </button>
+        </div>
+        <!-- Search results dropdown -->
+        <div id="search-results"></div>
+      </div>
     </div>
 
     <!-- Map -->
     <div id="map"></div>
 
-    <!-- Planning controls (hidden during navigation) -->
-    <div id="controls">
-      <button id="btn-start" class="control-btn active" title="Set start">
-        <span class="btn-icon">A</span>
-        <span class="btn-label">Start</span>
-      </button>
-      <button id="btn-end" class="control-btn" title="Set destination">
-        <span class="btn-icon">B</span>
-        <span class="btn-label">End</span>
-      </button>
-      <button id="btn-locate" class="control-btn" title="Use my location">
-        <span class="btn-icon">⊕</span>
-        <span class="btn-label">GPS</span>
-      </button>
-      <button id="btn-clear" class="control-btn" title="Clear all">
-        <span class="btn-icon">✕</span>
-        <span class="btn-label">Clear</span>
+    <!-- Layers menu (hidden during navigation) -->
+    <div id="layers-menu-wrapper">
+      <div id="layers-panel">
+        <div class="layers-section">
+          <div class="layers-section-title">Route Style</div>
+          <div id="profile-options"></div>
+        </div>
+        <div class="layers-section">
+          <div class="layers-section-title">Map Layers</div>
+          <div id="layer-toggle" class="toggle-row">
+            <span class="toggle-row-label">Bike Routes</span>
+            <span class="toggle-switch"></span>
+          </div>
+        </div>
+      </div>
+      <button id="btn-layers" title="Map options" aria-label="Map options">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
       </button>
     </div>
 
