@@ -13,7 +13,7 @@ import {
 } from './map';
 import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile } from './router';
 import type { RouteProfileKey } from './router';
-import { initSearch, getActiveInput, reverseGeocode } from './search';
+import { initSearch, getActiveInput, reverseGeocode, setSearchBias } from './search';
 import { getCurrentPosition } from './geolocation';
 import { drawElevationProfile } from './elevation';
 import { loadPbotData, togglePbotLayer } from './pbot-layer';
@@ -128,6 +128,14 @@ function init(): void {
   // Saved routes buttons
   $('btn-saved-routes').addEventListener('click', handleShowSavedRoutes);
   $('btn-close-saved').addEventListener('click', () => $('saved-routes-panel').classList.add('hidden'));
+
+  // Keep search bias in sync with map viewport
+  map.on('moveend', () => {
+    const c = map.getCenter();
+    const b = map.getBounds();
+    const bbox = `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`;
+    setSearchBias(c.lat, c.lng, bbox);
+  });
 
   // During nav, let user drag map to explore, but tap to re-center
   map.on('dragstart', () => {
@@ -263,6 +271,7 @@ async function handleLocate(): Promise<void> {
   try {
     const pos = await getCurrentPosition();
     const latlng = L.latLng(pos.lat, pos.lng);
+    setSearchBias(pos.lat, pos.lng);
     getMap().setView(latlng, 15);
     state.start = latlng;
     setStartMarker(latlng);

@@ -1,8 +1,9 @@
-import type { SearchResult } from './types';
-
-const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
-const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
-const PORTLAND_BBOX = '-122.84,45.42,-122.47,45.65';
+const PHOTON_URL = 'https://photon.komoot.io/api/';
+const PHOTON_REVERSE_URL = 'https://photon.komoot.io/reverse';
+// Dynamic bias — defaults to Portland, updated from map viewport
+let biasLat = 45.52;
+let biasLon = -122.68;
+let biasBbox = '-123.0,45.3,-122.4,45.7'; // minLon,minLat,maxLon,maxLat
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let activeInput: 'start' | 'end' = 'end';
@@ -13,6 +14,20 @@ export function getActiveInput(): 'start' | 'end' {
 
 export function setActiveInput(which: 'start' | 'end'): void {
   activeInput = which;
+}
+
+/** Update the search bias from the current map viewport. */
+export function setSearchBias(lat: number, lon: number, bbox?: string): void {
+  biasLat = lat;
+  biasLon = lon;
+  if (bbox) {
+    // Ensure bbox is at least ~30km wide so search stays useful when zoomed in
+    const p = bbox.split(',').map(Number);
+    const MIN_SPAN = 0.25; // ~25-30km
+    const padLon = Math.max((MIN_SPAN - (p[2] - p[0])) / 2, 0);
+    const padLat = Math.max((MIN_SPAN - (p[3] - p[1])) / 2, 0);
+    biasBbox = `${p[0] - padLon},${p[1] - padLat},${p[2] + padLon},${p[3] + padLat}`;
+  }
 }
 
 export function initSearch(
@@ -32,7 +47,7 @@ export function initSearch(
     }
 
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => searchAddress(query, resultsDiv, input, onSelect), 400);
+    debounceTimer = setTimeout(() => searchAddress(query, resultsDiv, input, onSelect), 300);
   }
 
   inputStart.addEventListener('input', () => {
@@ -67,6 +82,8 @@ export function initSearch(
   });
 }
 
+// ========== Forward geocoding (Photon) ==========
+
 async function searchAddress(
   query: string,
   resultsDiv: HTMLElement,
@@ -75,46 +92,51 @@ async function searchAddress(
 ): Promise<void> {
   const params = new URLSearchParams({
     q: query,
-    format: 'json',
-    viewbox: PORTLAND_BBOX,
-    bounded: '1',
+    lat: biasLat.toString(),
+    lon: biasLon.toString(),
+    bbox: biasBbox,
     limit: '5',
-    addressdetails: '1',
+    lang: 'en',
   });
 
   try {
-    const res = await fetch(`${NOMINATIM_URL}?${params}`, {
-      headers: { 'Accept-Language': 'en' },
-    });
-    const results: SearchResult[] = await res.json();
+    const res = await fetch(`${PHOTON_URL}?${params}`);
+    const data = await res.json();
+    const features: any[] = data.features || [];
 
     resultsDiv.innerHTML = '';
     resultsDiv.dataset.for = activeInput;
-    if (results.length === 0) {
+
+    if (features.length === 0) {
       resultsDiv.classList.remove('visible');
       return;
     }
 
-    for (const r of results) {
+    for (const f of features) {
+      const props = f.properties || {};
+      const [lon, lat] = f.geometry.coordinates;
+
+      const name = formatName(props);
+      const detail = formatDetail(props);
+
       const item = document.createElement('div');
       item.className = 'search-result-item';
 
       const nameSpan = document.createElement('span');
       nameSpan.className = 'result-name';
-      nameSpan.textContent = r.display_name.split(',')[0];
+      nameSpan.textContent = name;
 
       const addrSpan = document.createElement('span');
       addrSpan.className = 'result-address';
-      addrSpan.textContent = r.display_name.split(',').slice(1, 3).join(',').trim();
+      addrSpan.textContent = detail;
 
       item.appendChild(nameSpan);
       item.appendChild(addrSpan);
 
       item.addEventListener('click', () => {
-        const shortName = r.display_name.split(',')[0];
-        input.value = shortName;
+        input.value = name;
         resultsDiv.classList.remove('visible');
-        onSelect(parseFloat(String(r.lat)), parseFloat(String(r.lon)), shortName);
+        onSelect(lat, lon, name);
         input.blur();
       });
       resultsDiv.appendChild(item);
@@ -125,36 +147,57 @@ async function searchAddress(
   }
 }
 
+// ========== Reverse geocoding (Photon) ==========
+
 export async function reverseGeocode(lat: number, lng: number): Promise<string> {
   const params = new URLSearchParams({
     lat: lat.toString(),
     lon: lng.toString(),
-    format: 'json',
-    zoom: '18',
-    addressdetails: '1',
   });
 
   try {
-    const res = await fetch(`${NOMINATIM_REVERSE_URL}?${params}`, {
-      headers: { 'Accept-Language': 'en' },
-    });
+    const res = await fetch(`${PHOTON_REVERSE_URL}?${params}`);
     const data = await res.json();
-    if (data.error) return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    const f = data.features?.[0];
+    if (!f) return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 
-    const addr = data.address || {};
-
-    // Build a short, useful label like "123 NW Everett St"
-    if (addr.house_number && addr.road) {
-      return `${addr.house_number} ${addr.road}`;
-    }
-    if (addr.road) return addr.road;
-    if (addr.pedestrian) return addr.pedestrian;
-    if (addr.path) return addr.path;
-    if (addr.cycleway) return addr.cycleway;
-
-    // Fallback to first part of display_name
-    return data.display_name?.split(',')[0] || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    return formatName(f.properties || {});
   } catch {
     return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
   }
+}
+
+// ========== Address formatting ==========
+
+/** Is this a named place (business, park, etc.) rather than just a street address? */
+function isNamedPlace(p: any): boolean {
+  return !!(p.name && p.name !== p.street && p.name !== p.housenumber);
+}
+
+/** Primary display name for a result or reverse geocode. */
+function formatName(p: any): string {
+  // Named place: "Laurelhurst Theater", "Peninsula Park"
+  if (isNamedPlace(p)) return p.name;
+  // Street address: "431 Northeast Cook Street"
+  if (p.housenumber && p.street) return `${p.housenumber} ${p.street}`;
+  // Street only
+  if (p.street) return p.street;
+  // Fallback to name if nothing else
+  if (p.name) return p.name;
+  return 'Unknown location';
+}
+
+/** Secondary detail line for search results. */
+function formatDetail(p: any): string {
+  const parts: string[] = [];
+  // For named places, show the street address first
+  if (isNamedPlace(p)) {
+    if (p.housenumber && p.street) parts.push(`${p.housenumber} ${p.street}`);
+    else if (p.street) parts.push(p.street);
+  }
+  if (p.suburb) parts.push(p.suburb);
+  else if (p.district) parts.push(p.district);
+  if (p.city) parts.push(p.city);
+  if (p.state) parts.push(p.state);
+  return parts.join(', ');
 }
