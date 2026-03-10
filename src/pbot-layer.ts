@@ -1,5 +1,6 @@
 import L from 'leaflet';
 import { buildGraph } from './pbot-graph';
+import { indexBusyRoads } from './busy-roads';
 
 let pbotLayer: L.GeoJSON | null = null;
 let visible = false;
@@ -47,7 +48,17 @@ function classifyConnection(connectionType: string | null | undefined): Tier {
 
 export async function loadPbotData(map: L.Map): Promise<void> {
   try {
-    const res = await fetch(import.meta.env.BASE_URL + 'data/pbot-routes.geojson');
+    const [res, busyRes] = await Promise.all([
+      fetch(import.meta.env.BASE_URL + 'data/pbot-routes.geojson'),
+      fetch(import.meta.env.BASE_URL + 'data/busy-roads.geojson').catch(() => null),
+    ]);
+
+    // Index busy roads first — needed by buildGraph's gap bridge cost calculation
+    if (busyRes?.ok) {
+      const busyGeojson = await busyRes.json();
+      indexBusyRoads(busyGeojson);
+    }
+
     if (!res.ok) return;
     const geojson = await res.json();
 

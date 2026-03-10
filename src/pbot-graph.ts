@@ -2,6 +2,7 @@
 // A* pathfinding to guide BRouter through streets with known bike infrastructure.
 
 import { haversine } from './router';
+import { crossesBusyRoad, nearBusyRoad } from './busy-roads';
 import type { Waypoint } from './types';
 
 // ========== Types ==========
@@ -22,7 +23,7 @@ interface GraphEdge {
 // ========== Per-profile edge weights ==========
 // Lower = more preferred when routing
 
-export type GuidanceProfile = 'safest' | 'safe';
+export type GuidanceProfile = 'safest';
 
 // "Bike Paths" — aggressively favor MUPs, will detour significantly to stay
 // on paths/greenways and to use safe crossings of busy roads.
@@ -32,22 +33,13 @@ const WEIGHTS_SAFEST: Record<string, number> = {
   'BL': 1.8, 'SR_LT': 1.5, 'SC': 1.8, 'BL-SR_LT': 1.6,
   'SR_MT': 12.0, 'BL-SR_MT': 10.0, 'BL_VHT': 15.0,
   'DC': 3.0, 'SR_DC': 3.5, 'BL-DC': 2.5, 'SR_MT-DC': 15.0,
-  '_GAP': 8.0,  // gap-bridging edges: very costly — unknown roads could be dangerous
-};
-
-// "Mixed" — accepts bike lanes and quiet streets freely
-const WEIGHTS_SAFE: Record<string, number> = {
-  'MUP_P': 0.6, 'MUP_U': 0.7, 'BL-MUP': 0.6,
-  'NG': 0.7, 'BBL': 0.7,
-  'BL': 0.9, 'SR_LT': 0.9, 'SC': 1.0, 'BL-SR_LT': 0.9,
-  'SR_MT': 2.5, 'BL-SR_MT': 2.0, 'BL_VHT': 3.0,
-  'DC': 2.5, 'SR_DC': 2.5, 'BL-DC': 2.0, 'SR_MT-DC': 3.5,
-  '_GAP': 2.0,
+  '_GAP': 8.0,         // gap-bridging edges: unknown roads
+  '_GAP_BUSY': 40.0,   // gap crossing a secondary/arterial road
+  '_GAP_MAJOR': 200.0, // gap crossing a trunk/primary/motorway
 };
 
 const PROFILE_WEIGHTS: Record<GuidanceProfile, Record<string, number>> = {
   safest: WEIGHTS_SAFEST,
-  safe: WEIGHTS_SAFE,
 };
 
 // Minimum edge cost per type (per profile).
@@ -56,22 +48,19 @@ const PROFILE_WEIGHTS: Record<GuidanceProfile, Record<string, number>> = {
 const MIN_COST_SAFEST: Record<string, number> = {
   'SR_MT': 1200, 'BL-SR_MT': 800, 'BL_VHT': 1500, 'SR_MT-DC': 1500,
   '_GAP': 500,
-};
-
-const MIN_COST_SAFE: Record<string, number> = {
-  'BL_VHT': 300,
-  'SR_MT-DC': 300,
+  '_GAP_BUSY': 3000,
+  '_GAP_MAJOR': 10000,
 };
 
 const PROFILE_MIN_COSTS: Record<GuidanceProfile, Record<string, number>> = {
   safest: MIN_COST_SAFEST,
-  safe: MIN_COST_SAFE,
 };
 
 const MIN_WEIGHT = 0.15;       // smallest multiplier across all profiles (keeps A* heuristic admissible)
 const MAX_SNAP_DIST = 500;     // max meters from point to nearest PBOT node
 const MAX_SAMPLES = 25;        // cap waypoints passed to BRouter
 const GAP_BRIDGE_DIST = 150;   // max meters for synthetic gap-bridging edges
+const MIN_SPACING = 200;        // meters - minimum distance between consecutive waypoints
 
 // ========== Module state ==========
 
@@ -181,9 +170,11 @@ function addGapBridges(): void {
           const d = haversine([node.lat, node.lng], [other.lat, other.lng]);
           if (d > GAP_BRIDGE_DIST) continue;
 
+          const severity = crossesBusyRoad(node.lat, node.lng, other.lat, other.lng);
+          const ct = severity === 'major' ? '_GAP_MAJOR' : severity === 'secondary' ? '_GAP_BUSY' : '_GAP';
           const coords: [number, number][] = [[node.lat, node.lng], [other.lat, other.lng]];
-          node.edges.push({ target: otherKey, ct: '_GAP', distance: d, coords });
-          other.edges.push({ target: key, ct: '_GAP', distance: d, coords: [[other.lat, other.lng], [node.lat, node.lng]] });
+          node.edges.push({ target: otherKey, ct, distance: d, coords });
+          other.edges.push({ target: key, ct, distance: d, coords: [[other.lat, other.lng], [node.lat, node.lng]] });
           connected.add(otherKey);
         }
       }
@@ -198,6 +189,8 @@ function snap(lat: number, lng: number): string | null {
 
   let best: string | null = null;
   let bestD = Infinity;
+  let bestSafe: string | null = null;
+  let bestSafeD = Infinity;
   const bLat = Math.floor(lat * 1000);
   const bLng = Math.floor(lng * 1000);
 
@@ -209,12 +202,23 @@ function snap(lat: number, lng: number): string | null {
       for (const k of keys) {
         const n = nodes.get(k)!;
         const d = haversine([lat, lng], [n.lat, n.lng]);
+        if (d > MAX_SNAP_DIST) continue;
         if (d < bestD) { bestD = d; best = k; }
+        // Track closest node reachable without crossing a major road
+        if (d < bestSafeD && crossesBusyRoad(lat, lng, n.lat, n.lng) !== 'major') {
+          bestSafeD = d;
+          bestSafe = k;
+        }
       }
     }
   }
 
-  return bestD <= MAX_SNAP_DIST ? best : null;
+  // Prefer a node that doesn't require crossing a major road,
+  // as long as it's not drastically farther (within 2x or +200m)
+  if (bestSafe && bestSafeD <= Math.max(bestD * 2, bestD + 200)) {
+    return bestSafe;
+  }
+  return best ?? null;
 }
 
 // ========== A* pathfinding ==========
@@ -303,20 +307,37 @@ function astar(startKey: string, endKey: string, weights: Record<string, number>
   return path;
 }
 
+// ========== Minimum-spacing filter ==========
+
+/** Drop intermediate waypoints that are too close together, preventing
+ *  zigzag via-points on parallel one-way streets (e.g. Broadway/Weidler). */
+function enforceMinSpacing(waypoints: Waypoint[]): Waypoint[] {
+  if (waypoints.length <= 2) return waypoints;
+  const result: Waypoint[] = [waypoints[0]];
+  for (let i = 1; i < waypoints.length - 1; i++) {
+    const last = result[result.length - 1];
+    if (haversine([last.lat, last.lng], [waypoints[i].lat, waypoints[i].lng]) >= MIN_SPACING) {
+      result.push(waypoints[i]);
+    }
+  }
+  // Always keep the last waypoint (final infrastructure decision point)
+  result.push(waypoints[waypoints.length - 1]);
+  return result;
+}
+
 // ========== Public API ==========
 
 /**
  * Find intermediate waypoints through the PBOT bike network between two points.
  * The profile controls how aggressively the path favors dedicated bike infrastructure:
  *   - 'safest': strongly prefers MUPs and greenways, penalizes shared roads
- *   - 'safe': accepts bike lanes and low-traffic streets freely
  * Returns waypoints (excluding start/end) suitable for passing to BRouter,
  * or null if the points are too far from the network or no path exists.
  */
 export function findGuidedWaypoints(
   startLat: number, startLng: number,
   endLat: number, endLng: number,
-  profile: GuidanceProfile = 'safe',
+  profile: GuidanceProfile = 'safest',
 ): Waypoint[] | null {
   if (!nodes) return null;
 
@@ -352,12 +373,11 @@ export function findGuidedWaypoints(
     return [{ lat: mid[0], lng: mid[1] }];
   }
 
-  if (junctions.length <= MAX_SAMPLES) {
-    return junctions;
-  }
+  const sampled = junctions.length <= MAX_SAMPLES
+    ? junctions
+    : thinJunctions(junctions, edgePath);
 
-  // Too many junctions — thin while preserving critical turn/type-change points
-  return thinJunctions(junctions, edgePath);
+  return enforceMinSpacing(sampled);
 }
 
 // ========== Waypoint thinning ==========
@@ -450,6 +470,13 @@ export function classifyRoute(coords: [number, number][]): InfraTier[] {
         }
       }
     }
+    // If not near any PBOT infrastructure, check if on a busy road
+    if (bestTier === 'none') {
+      const severity = nearBusyRoad(lat, lng, CLASSIFY_SNAP);
+      if (severity === 'major') bestTier = 'avoid';
+      else if (severity === 'secondary') bestTier = 'caution';
+    }
+
     return bestTier;
   });
 }

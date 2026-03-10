@@ -6,7 +6,8 @@
     "dev": "vite --config vite.config.ts",
     "build": "vite build --config vite.config.ts",
     "preview": "vite preview --config vite.config.ts",
-    "fetch-data": "npx tsx scripts/fetch-pbot-data.ts"
+    "fetch-data": "npx tsx scripts/fetch-pbot-data.ts && npx tsx scripts/fetch-busy-roads.ts",
+    "fetch-busy-roads": "npx tsx scripts/fetch-busy-roads.ts"
   },
   "repository": {
     "type": "git",

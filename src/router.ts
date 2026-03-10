@@ -8,13 +8,12 @@ const BROUTER_URL = 'https://brouter.de/brouter';
 // Profiles ordered from safest to fastest
 export const ROUTE_PROFILES = {
   'safest': { profile: 'fastbike-verylowtraffic', label: 'Bike Paths', description: 'Prioritize multi-use paths and trails' },
-  'safe': { profile: 'trekking', label: 'Mixed', description: 'Bike lanes, greenways, and low-traffic streets' },
   'balanced': { profile: 'fastbike-lowtraffic', label: 'Direct', description: 'Shorter distance, less bike infrastructure' },
 } as const;
 
 export type RouteProfileKey = keyof typeof ROUTE_PROFILES;
 
-let currentProfile: RouteProfileKey = 'safe';
+let currentProfile: RouteProfileKey = 'safest';
 
 export function setRouteProfile(key: RouteProfileKey): void {
   currentProfile = key;
