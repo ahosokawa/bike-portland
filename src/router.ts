@@ -2,6 +2,7 @@ import type { LatLng } from 'leaflet';
 import type { RouteResult, TurnInstruction, Waypoint } from './types';
 import { findGuidedWaypoints, isGraphReady } from './pbot-graph';
 import type { GuidanceProfile } from './pbot-graph';
+import { haversine as hav } from './geo';
 
 const BROUTER_URL = 'https://brouter.de/brouter';
 
@@ -184,21 +185,45 @@ function directionIcon(direction: string): string {
   return 'continue';
 }
 
-export function computeDistance(coords: [number, number][]): number {
-  let total = 0;
-  for (let i = 1; i < coords.length; i++) {
-    total += haversine(coords[i - 1], coords[i]);
-  }
-  return total;
-}
+export { haversine, computeDistance } from './geo';
 
-export function haversine(a: [number, number], b: [number, number]): number {
-  const R = 6371000;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dlat = toRad(b[0] - a[0]);
-  const dlon = toRad(b[1] - a[1]);
-  const sinLat = Math.sin(dlat / 2);
-  const sinLon = Math.sin(dlon / 2);
-  const h = sinLat * sinLat + Math.cos(toRad(a[0])) * Math.cos(toRad(b[0])) * sinLon * sinLon;
-  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+// ========== Backtracking detection (diagnostic) ==========
+
+/** Detect bearing reversals in a route for debugging.
+ *  Logs warnings for segments where the route doubles back. */
+export function detectBacktracking(coords: [number, number][]): void {
+  if (coords.length < 3) return;
+
+  const toRad = (deg: number) => deg * Math.PI / 180;
+  function bearing(a: [number, number], b: [number, number]): number {
+    const dLng = toRad(b[1] - a[1]);
+    const y = Math.sin(dLng) * Math.cos(toRad(b[0]));
+    const x = Math.cos(toRad(a[0])) * Math.sin(toRad(b[0]))
+            - Math.sin(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.cos(dLng);
+    return Math.atan2(y, x) * 180 / Math.PI;
+  }
+
+  // Sample bearings at ~100m intervals to avoid noise from small wiggles
+  const samples: { bearing: number; idx: number }[] = [];
+  let accumDist = 0;
+  let lastSampleIdx = 0;
+  for (let i = 1; i < coords.length; i++) {
+    accumDist += hav(coords[i - 1], coords[i]);
+    if (accumDist >= 100 || i === coords.length - 1) {
+      samples.push({ bearing: bearing(coords[lastSampleIdx], coords[i]), idx: i });
+      accumDist = 0;
+      lastSampleIdx = i;
+    }
+  }
+
+  for (let i = 1; i < samples.length; i++) {
+    let diff = Math.abs(samples[i].bearing - samples[i - 1].bearing);
+    if (diff > 180) diff = 360 - diff;
+    if (diff > 120) {
+      console.warn(
+        `[PedalPDX] Possible backtracking at coord index ${samples[i].idx}: ` +
+        `bearing changed ${diff.toFixed(0)}° (${samples[i - 1].bearing.toFixed(0)}° → ${samples[i].bearing.toFixed(0)}°)`
+      );
+    }
+  }
 }

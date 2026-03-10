@@ -11,7 +11,7 @@ import {
   clearUserPosition,
   setPlanningMarkersVisible,
 } from './map';
-import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile } from './router';
+import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile, detectBacktracking } from './router';
 import { classifyRoute } from './pbot-graph';
 import type { RouteProfileKey } from './router';
 import { initSearch, getActiveInput, reverseGeocode, setSearchBias } from './search';
@@ -321,6 +321,7 @@ async function handleRoute(): Promise<void> {
     const route = await computeGuidedRoute(state.start, state.end);
     if (requestId !== routeRequestId) return;
     state.route = route;
+    detectBacktracking(route.coordinates);
     displayRoute(route.coordinates, classifyRoute(route.coordinates));
     showRoutePanel(route);
   } catch (err) {

@@ -1,4 +1,4 @@
-import { haversine } from './router';
+import { haversine } from './geo';
 import type { RouteResult, TurnInstruction } from './types';
 
 const OFF_ROUTE_THRESHOLD = 50; // meters

@@ -1,7 +1,7 @@
 // Builds a routable graph from PBOT bike infrastructure GeoJSON and provides
 // A* pathfinding to guide BRouter through streets with known bike infrastructure.
 
-import { haversine } from './router';
+import { haversine, pointToSegDist, pointToEdgeDist } from './geo';
 import { crossesBusyRoad, nearBusyRoad } from './busy-roads';
 import type { Waypoint } from './types';
 
@@ -33,7 +33,7 @@ const WEIGHTS_SAFEST: Record<string, number> = {
   'BL': 1.8, 'SR_LT': 1.5, 'SC': 1.8, 'BL-SR_LT': 1.6,
   'SR_MT': 12.0, 'BL-SR_MT': 10.0, 'BL_VHT': 15.0,
   'DC': 3.0, 'SR_DC': 3.5, 'BL-DC': 2.5, 'SR_MT-DC': 15.0,
-  '_GAP': 8.0,         // gap-bridging edges: unknown roads
+  '_GAP': 2.0,         // gap-bridging edges: unknown residential roads
   '_GAP_BUSY': 40.0,   // gap crossing a secondary/arterial road
   '_GAP_MAJOR': 200.0, // gap crossing a trunk/primary/motorway
 };
@@ -47,7 +47,7 @@ const PROFILE_WEIGHTS: Record<GuidanceProfile, Record<string, number>> = {
 // of crossing/entering a busy road regardless of distance.
 const MIN_COST_SAFEST: Record<string, number> = {
   'SR_MT': 1200, 'BL-SR_MT': 800, 'BL_VHT': 1500, 'SR_MT-DC': 1500,
-  '_GAP': 500,
+  '_GAP': 80,
   '_GAP_BUSY': 3000,
   '_GAP_MAJOR': 10000,
 };
@@ -59,13 +59,22 @@ const PROFILE_MIN_COSTS: Record<GuidanceProfile, Record<string, number>> = {
 const MIN_WEIGHT = 0.15;       // smallest multiplier across all profiles (keeps A* heuristic admissible)
 const MAX_SNAP_DIST = 500;     // max meters from point to nearest PBOT node
 const MAX_SAMPLES = 25;        // cap waypoints passed to BRouter
-const GAP_BRIDGE_DIST = 150;   // max meters for synthetic gap-bridging edges
+const GAP_BRIDGE_DIST = 250;   // max meters for synthetic gap-bridging edges
 const MIN_SPACING = 200;        // meters - minimum distance between consecutive waypoints
 
 // ========== Module state ==========
 
 let nodes: Map<string, GraphNode> | null = null;
 let grid: Map<string, string[]> | null = null;
+
+// Spatial index of edges for classification — indexes edges by every grid cell
+// their geometry passes through (not just endpoint cells). Solves the problem
+// where long edges pass through cells that contain no graph nodes.
+interface IndexedEdge {
+  ct: string;
+  coords: [number, number][];
+}
+let edgeIndex: Map<string, IndexedEdge[]> | null = null;
 
 // ========== Coordinate helpers ==========
 
@@ -132,6 +141,44 @@ export function buildGraph(geojson: any): void {
 
   nodes = _n;
   grid = _g;
+
+  // Build spatial edge index for route classification.
+  // Each edge is indexed in every grid cell its geometry passes through,
+  // including cells between vertices (long segments can span multiple cells).
+  const _ei = new Map<string, IndexedEdge[]>();
+
+  function addToEdgeIndex(cellKey: string, ie: IndexedEdge): void {
+    const arr = _ei.get(cellKey);
+    if (arr) {
+      if (arr[arr.length - 1] !== ie) arr.push(ie);
+    } else {
+      _ei.set(cellKey, [ie]);
+    }
+  }
+
+  for (const [, node] of _n) {
+    for (const edge of node.edges) {
+      const ie: IndexedEdge = { ct: edge.ct, coords: edge.coords };
+      for (let i = 0; i < edge.coords.length; i++) {
+        addToEdgeIndex(gk(edge.coords[i][0], edge.coords[i][1]), ie);
+        // Also index all grid cells between consecutive vertices
+        if (i < edge.coords.length - 1) {
+          const [lat1, lng1] = edge.coords[i];
+          const [lat2, lng2] = edge.coords[i + 1];
+          const minLat = Math.floor(Math.min(lat1, lat2) * 1000);
+          const maxLat = Math.floor(Math.max(lat1, lat2) * 1000);
+          const minLng = Math.floor(Math.min(lng1, lng2) * 1000);
+          const maxLng = Math.floor(Math.max(lng1, lng2) * 1000);
+          for (let gLat = minLat; gLat <= maxLat; gLat++) {
+            for (let gLng = minLng; gLng <= maxLng; gLng++) {
+              addToEdgeIndex(`${gLat},${gLng}`, ie);
+            }
+          }
+        }
+      }
+    }
+  }
+  edgeIndex = _ei;
 
   // Add synthetic edges between nearby but unconnected nodes so the pathfinder
   // can bridge gaps in the PBOT network (e.g. reach a MUP across a few blocks
@@ -325,6 +372,110 @@ function enforceMinSpacing(waypoints: Waypoint[]): Waypoint[] {
   return result;
 }
 
+// ========== Forward-progress filter ==========
+
+/** Remove waypoints that go significantly backward relative to the start→end
+ *  direction, preventing BRouter from backtracking. Allows small backward
+ *  steps (within 10% of route length) for legitimate detours to reach a MUP. */
+function enforceForwardProgress(
+  waypoints: Waypoint[],
+  startLat: number, startLng: number,
+  endLat: number, endLng: number,
+): Waypoint[] {
+  if (waypoints.length <= 1) return waypoints;
+
+  const cosLat = Math.cos(((startLat + endLat) / 2) * Math.PI / 180);
+  const dx = (endLng - startLng) * cosLat;
+  const dy = endLat - startLat;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-12) return waypoints;
+
+  function project(wp: Waypoint): number {
+    const px = (wp.lng - startLng) * cosLat;
+    const py = wp.lat - startLat;
+    return (px * dx + py * dy) / lenSq;
+  }
+
+  const result: Waypoint[] = [];
+  let maxProj = -Infinity;
+
+  for (const wp of waypoints) {
+    const proj = project(wp);
+    if (proj >= maxProj - 0.10) {
+      result.push(wp);
+      maxProj = Math.max(maxProj, proj);
+    }
+  }
+
+  return result;
+}
+
+// ========== River-crossing filter ==========
+
+// The Willamette River runs north-south through Portland. PBOT data includes
+// east-bank waterfront paths whose coordinates sit right at the river's edge
+// (~-122.666 to -122.669). BRouter's OSM network doesn't always have matching
+// roads there, causing it to cross bridges to reach these waypoints.
+// When start and end are both well inland on the same side, we filter out
+// waypoints in the waterfront "danger zone" that BRouter can't reliably reach.
+// River corridor: the Willamette runs at ~-122.667. PBOT data includes
+// east-bank waterfront paths at -122.665 to -122.669 that BRouter can't
+// reliably route to without crossing bridges. When start and end are on
+// the same side, nudge river-corridor waypoints to the nearest safe node.
+const RIVER_CORRIDOR_EAST = -122.665;
+const RIVER_CORRIDOR_WEST = -122.672;
+const INLAND_THRESHOLD = -122.660;
+
+function fixRiverWaypoints(
+  waypoints: Waypoint[],
+  startLng: number, endLng: number,
+): Waypoint[] {
+  if (!nodes || !grid) return waypoints;
+
+  const startEast = startLng > INLAND_THRESHOLD;
+  const endEast = endLng > INLAND_THRESHOLD;
+  const startWest = startLng < RIVER_CORRIDOR_WEST;
+  const endWest = endLng < RIVER_CORRIDOR_WEST;
+
+  if (!((startEast && endEast) || (startWest && endWest))) return waypoints;
+
+  // Determine which side is safe
+  const safeSide = startEast ? 'east' : 'west';
+
+  return waypoints.map(wp => {
+    const inCorridor = wp.lng <= RIVER_CORRIDOR_EAST && wp.lng >= RIVER_CORRIDOR_WEST;
+    if (!inCorridor) return wp;
+
+    // Find the nearest PBOT node that's safely on the correct side
+    const bLat = Math.floor(wp.lat * 1000);
+    const bLng = Math.floor(wp.lng * 1000);
+    let bestKey: string | null = null;
+    let bestDist = Infinity;
+
+    for (let dl = -3; dl <= 3; dl++) {
+      for (let dn = -3; dn <= 3; dn++) {
+        const keys = grid!.get(`${bLat + dl},${bLng + dn}`);
+        if (!keys) continue;
+        for (const k of keys) {
+          const n = nodes!.get(k)!;
+          // Must be on the safe side
+          if (safeSide === 'east' && n.lng <= RIVER_CORRIDOR_EAST) continue;
+          if (safeSide === 'west' && n.lng >= RIVER_CORRIDOR_WEST) continue;
+          const d = haversine([wp.lat, wp.lng], [n.lat, n.lng]);
+          if (d < bestDist) { bestDist = d; bestKey = k; }
+        }
+      }
+    }
+
+    if (bestKey && bestDist < 500) {
+      const n = nodes!.get(bestKey)!;
+      return { lat: n.lat, lng: n.lng };
+    }
+    // Can't find a safe replacement — drop this waypoint
+    return null;
+  }).filter((wp): wp is Waypoint => wp !== null);
+}
+
 // ========== Public API ==========
 
 /**
@@ -377,7 +528,9 @@ export function findGuidedWaypoints(
     ? junctions
     : thinJunctions(junctions, edgePath);
 
-  return enforceMinSpacing(sampled);
+  const spaced = enforceMinSpacing(sampled);
+  const noRiverDetour = fixRiverWaypoints(spaced, startLng, endLng);
+  return enforceForwardProgress(noRiverDetour, startLat, startLng, endLat, endLng);
 }
 
 // ========== Waypoint thinning ==========
@@ -425,9 +578,10 @@ const TIER_FROM_CT: Record<string, InfraTier> = {
   'BL': 'lane', 'SR_LT': 'lane', 'SC': 'lane', 'BL-SR_LT': 'lane',
   'SR_MT': 'caution', 'BL-SR_MT': 'caution', 'BL_VHT': 'caution',
   'DC': 'avoid', 'SR_DC': 'avoid', 'BL-DC': 'avoid', 'SR_MT-DC': 'avoid',
+  '_GAP': 'none', '_GAP_BUSY': 'caution', '_GAP_MAJOR': 'avoid',
 };
 
-const CLASSIFY_SNAP = 25; // meters — max distance to match a route point to PBOT edge
+const CLASSIFY_SNAP = 50; // meters — max distance to match a route point to PBOT edge
 
 /**
  * For each coordinate on a computed route, classify what type of bike
@@ -435,42 +589,47 @@ const CLASSIFY_SNAP = 25; // meters — max distance to match a route point to P
  * Returns a parallel array of InfraTier values (one per coordinate).
  */
 export function classifyRoute(coords: [number, number][]): InfraTier[] {
-  if (!nodes || !grid) return coords.map(() => 'none');
+  if (!edgeIndex) return coords.map(() => 'none');
 
   return coords.map(([lat, lng]) => {
     const bLat = Math.floor(lat * 1000);
     const bLng = Math.floor(lng * 1000);
 
-    let bestTier: InfraTier = 'none';
-    let bestDist = CLASSIFY_SNAP;
-    const visited = new Set<string>();
+    // Track real PBOT edges and synthetic gap edges separately —
+    // prefer real edges so gap edges don't mask actual infrastructure.
+    let bestRealTier: InfraTier = 'none';
+    let bestRealDist = CLASSIFY_SNAP;
+    let bestGapTier: InfraTier = 'none';
+    let bestGapDist = CLASSIFY_SNAP;
+    const visited = new Set<IndexedEdge>();
 
     for (let dl = -1; dl <= 1; dl++) {
       for (let dn = -1; dn <= 1; dn++) {
-        const keys = grid!.get(`${bLat + dl},${bLng + dn}`);
-        if (!keys) continue;
-        for (const k of keys) {
-          const n = nodes!.get(k)!;
-          for (const edge of n.edges) {
-            // Deduplicate: each edge exists in both directions
-            const ek = k < edge.target ? `${k}|${edge.target}` : `${edge.target}|${k}`;
-            if (visited.has(ek)) continue;
-            visited.add(ek);
+        const edges = edgeIndex!.get(`${bLat + dl},${bLng + dn}`);
+        if (!edges) continue;
+        for (const edge of edges) {
+          if (visited.has(edge)) continue;
+          visited.add(edge);
 
-            const tier = TIER_FROM_CT[edge.ct];
-            if (!tier) continue; // skip _GAP and unknown types
+          const tier = TIER_FROM_CT[edge.ct];
+          if (!tier) continue;
 
-            // Distance from route point to closest point on the edge geometry
-            const d = pointToEdgeDist([lat, lng], edge.coords);
-            if (d < bestDist) {
-              bestDist = d;
-              bestTier = tier;
-            }
+          const d = pointToEdgeDist([lat, lng], edge.coords);
+          const isGap = edge.ct[0] === '_';
+          if (isGap) {
+            if (d < bestGapDist) { bestGapDist = d; bestGapTier = tier; }
+          } else {
+            if (d < bestRealDist) { bestRealDist = d; bestRealTier = tier; }
           }
         }
       }
     }
-    // If not near any PBOT infrastructure, check if on a busy road
+
+    // Prefer real PBOT edge; fall back to gap edge; then busy-road check
+    let bestTier = bestRealTier;
+    if (bestTier === 'none' && bestGapTier !== 'none') {
+      bestTier = bestGapTier;
+    }
     if (bestTier === 'none') {
       const severity = nearBusyRoad(lat, lng, CLASSIFY_SNAP);
       if (severity === 'major') bestTier = 'avoid';
@@ -481,27 +640,32 @@ export function classifyRoute(coords: [number, number][]): InfraTier[] {
   });
 }
 
-/** Minimum distance from point p to any segment of a polyline. */
-function pointToEdgeDist(p: [number, number], coords: [number, number][]): number {
-  if (coords.length === 0) return Infinity;
-  if (coords.length === 1) return haversine(p, coords[0]);
-  let min = Infinity;
-  for (let i = 0; i < coords.length - 1; i++) {
-    const d = pointToSegDist(p, coords[i], coords[i + 1]);
-    if (d < min) min = d;
+/** Debug: find nearest PBOT edge to a point, regardless of snap distance.
+ *  Returns distance in meters, edge type, and tier. */
+export function debugNearestEdge(lat: number, lng: number): { dist: number; ct: string; tier: string } | null {
+  if (!edgeIndex) return null;
+
+  const bLat = Math.floor(lat * 1000);
+  const bLng = Math.floor(lng * 1000);
+  let bestDist = Infinity;
+  let bestCt = '';
+  const visited = new Set<IndexedEdge>();
+
+  for (let dl = -5; dl <= 5; dl++) {
+    for (let dn = -5; dn <= 5; dn++) {
+      const edges = edgeIndex.get(`${bLat + dl},${bLng + dn}`);
+      if (!edges) continue;
+      for (const edge of edges) {
+        if (edge.ct[0] === '_') continue;
+        if (visited.has(edge)) continue;
+        visited.add(edge);
+        const d = pointToEdgeDist([lat, lng], edge.coords);
+        if (d < bestDist) { bestDist = d; bestCt = edge.ct; }
+      }
+    }
   }
-  return min;
+
+  if (!bestCt) return null;
+  return { dist: bestDist, ct: bestCt, tier: TIER_FROM_CT[bestCt] || 'none' };
 }
 
-/** Distance from point p to the closest point on segment a–b (flat-earth approx). */
-function pointToSegDist(p: [number, number], a: [number, number], b: [number, number]): number {
-  const cosLat = Math.cos(p[0] * Math.PI / 180);
-  const px = (p[1] - a[1]) * cosLat;
-  const py = p[0] - a[0];
-  const dx = (b[1] - a[1]) * cosLat;
-  const dy = b[0] - a[0];
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq < 1e-12) return haversine(p, a);
-  const t = Math.max(0, Math.min(1, (px * dx + py * dy) / lenSq));
-  return haversine(p, [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
-}

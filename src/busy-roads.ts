@@ -1,7 +1,7 @@
 // Spatial index for major roads (from OSM) used to penalize bike route
 // gap-bridge edges that cross busy streets without bike infrastructure.
 
-import { haversine } from './router';
+import { haversine, pointToSegDist } from './geo';
 
 // ========== Types ==========
 
@@ -162,15 +162,3 @@ export function nearBusyRoad(lat: number, lng: number, maxDist: number): BusyRoa
   return worstSeverity;
 }
 
-// Point-to-segment distance (flat-earth approx)
-function pointToSegDist(p: [number, number], a: [number, number], b: [number, number]): number {
-  const cosLat = Math.cos(p[0] * Math.PI / 180);
-  const px = (p[1] - a[1]) * cosLat;
-  const py = p[0] - a[0];
-  const dx = (b[1] - a[1]) * cosLat;
-  const dy = b[0] - a[0];
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq < 1e-12) return haversine(p, a);
-  const t = Math.max(0, Math.min(1, (px * dx + py * dy) / lenSq));
-  return haversine(p, [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
-}
