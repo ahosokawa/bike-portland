@@ -24,24 +24,25 @@ interface GraphEdge {
 
 export type GuidanceProfile = 'safest' | 'safe';
 
-// "Bike Paths" — aggressively favor MUPs, will detour up to ~1 mi to stay on paths
+// "Bike Paths" — aggressively favor MUPs, will detour significantly to stay
+// on paths/greenways and to use safe crossings of busy roads.
 const WEIGHTS_SAFEST: Record<string, number> = {
   'MUP_P': 0.15, 'MUP_U': 0.2, 'BL-MUP': 0.15,
   'NG': 0.5, 'BBL': 0.5,
   'BL': 1.8, 'SR_LT': 1.5, 'SC': 1.8, 'BL-SR_LT': 1.6,
-  'SR_MT': 4.0, 'BL-SR_MT': 4.0, 'BL_VHT': 5.0,
-  'DC': 6.0, 'SR_DC': 6.0, 'BL-DC': 6.0, 'SR_MT-DC': 6.0,
-  '_GAP': 2.5,  // gap-bridging edges: costly but allows reaching MUPs
+  'SR_MT': 12.0, 'BL-SR_MT': 10.0, 'BL_VHT': 15.0,
+  'DC': 3.0, 'SR_DC': 3.5, 'BL-DC': 2.5, 'SR_MT-DC': 15.0,
+  '_GAP': 8.0,  // gap-bridging edges: very costly — unknown roads could be dangerous
 };
 
-// "Low Traffic" — accepts bike lanes and quiet streets freely
+// "Mixed" — accepts bike lanes and quiet streets freely
 const WEIGHTS_SAFE: Record<string, number> = {
   'MUP_P': 0.6, 'MUP_U': 0.7, 'BL-MUP': 0.6,
   'NG': 0.7, 'BBL': 0.7,
   'BL': 0.9, 'SR_LT': 0.9, 'SC': 1.0, 'BL-SR_LT': 0.9,
-  'SR_MT': 2.0, 'BL-SR_MT': 2.0, 'BL_VHT': 2.5,
-  'DC': 3.5, 'SR_DC': 3.5, 'BL-DC': 3.5, 'SR_MT-DC': 3.5,
-  '_GAP': 1.5,  // gap-bridging edges
+  'SR_MT': 2.5, 'BL-SR_MT': 2.0, 'BL_VHT': 3.0,
+  'DC': 2.5, 'SR_DC': 2.5, 'BL-DC': 2.0, 'SR_MT-DC': 3.5,
+  '_GAP': 2.0,
 };
 
 const PROFILE_WEIGHTS: Record<GuidanceProfile, Record<string, number>> = {
@@ -49,11 +50,28 @@ const PROFILE_WEIGHTS: Record<GuidanceProfile, Record<string, number>> = {
   safe: WEIGHTS_SAFE,
 };
 
+// Minimum edge cost per type (per profile).
+// Even a 10m segment on SR_MT incurs this cost, modeling the inherent danger
+// of crossing/entering a busy road regardless of distance.
+const MIN_COST_SAFEST: Record<string, number> = {
+  'SR_MT': 1200, 'BL-SR_MT': 800, 'BL_VHT': 1500, 'SR_MT-DC': 1500,
+  '_GAP': 500,
+};
+
+const MIN_COST_SAFE: Record<string, number> = {
+  'BL_VHT': 300,
+  'SR_MT-DC': 300,
+};
+
+const PROFILE_MIN_COSTS: Record<GuidanceProfile, Record<string, number>> = {
+  safest: MIN_COST_SAFEST,
+  safe: MIN_COST_SAFE,
+};
+
 const MIN_WEIGHT = 0.15;       // smallest multiplier across all profiles (keeps A* heuristic admissible)
 const MAX_SNAP_DIST = 500;     // max meters from point to nearest PBOT node
-const SAMPLE_SPACING = 300;    // meters between sampled via-points (denser = BRouter stays on path)
-const MAX_SAMPLES = 20;        // cap waypoints passed to BRouter
-const GAP_BRIDGE_DIST = 200;   // max meters for synthetic gap-bridging edges
+const MAX_SAMPLES = 25;        // cap waypoints passed to BRouter
+const GAP_BRIDGE_DIST = 150;   // max meters for synthetic gap-bridging edges
 
 // ========== Module state ==========
 
@@ -203,7 +221,7 @@ function snap(lat: number, lng: number): string | null {
 
 // Inline min-heap on [f-cost, nodeKey] tuples
 
-function astar(startKey: string, endKey: string, weights: Record<string, number>): GraphEdge[] | null {
+function astar(startKey: string, endKey: string, weights: Record<string, number>, minCosts: Record<string, number>): GraphEdge[] | null {
   if (!nodes) return null;
 
   const endNode = nodes.get(endKey)!;
@@ -259,7 +277,7 @@ function astar(startKey: string, endKey: string, weights: Record<string, number>
 
     for (const edge of node.edges) {
       if (closed.has(edge.target)) continue;
-      const edgeCost = edge.distance * (weights[edge.ct] ?? 2.0);
+      const edgeCost = Math.max(edge.distance * (weights[edge.ct] ?? 3.0), minCosts[edge.ct] ?? 0);
       const ng = g + edgeCost;
       if (ng >= (gCost.get(edge.target) ?? Infinity)) continue;
 
@@ -307,57 +325,156 @@ export function findGuidedWaypoints(
   if (!sk || !ek || sk === ek) return null;
 
   const weights = PROFILE_WEIGHTS[profile];
-  const edgePath = astar(sk, ek, weights);
+  const minCosts = PROFILE_MIN_COSTS[profile];
+  const edgePath = astar(sk, ek, weights, minCosts);
   if (!edgePath || edgePath.length === 0) return null;
 
-  // Collect all coordinates along the path
-  const all: [number, number][] = [];
-  for (let i = 0; i < edgePath.length; i++) {
-    const skip = i === 0 ? 0 : 1; // avoid duplicate junction points
-    for (let j = skip; j < edgePath[i].coords.length; j++) {
-      all.push(edgePath[i].coords[j]);
-    }
-  }
-
-  if (all.length < 2) return null;
-  return sampleWaypoints(all);
-}
-
-// ========== Waypoint sampling ==========
-
-function sampleWaypoints(coords: [number, number][]): Waypoint[] {
-  // Build cumulative distance array
-  const cum: number[] = [0];
-  for (let i = 1; i < coords.length; i++) {
-    cum.push(cum[i - 1] + haversine(coords[i - 1], coords[i]));
-  }
-  const total = cum[cum.length - 1];
-
-  if (total < SAMPLE_SPACING * 2) {
-    // Short path — single midpoint
+  if (edgePath.length === 1) {
+    // Single edge — sample its midpoint so BRouter follows it
+    const coords = edgePath[0].coords;
     const mid = coords[Math.floor(coords.length / 2)];
     return [{ lat: mid[0], lng: mid[1] }];
   }
 
-  const n = Math.min(MAX_SAMPLES, Math.floor(total / SAMPLE_SPACING));
-  const step = total / (n + 1);
-  const result: Waypoint[] = [];
-  let ci = 0;
-
-  for (let i = 1; i <= n; i++) {
-    const target = step * i;
-    while (ci < coords.length - 1 && cum[ci + 1] < target) ci++;
-    if (ci >= coords.length - 1) break;
-
-    // Linear interpolation within the segment
-    const segLen = cum[ci + 1] - cum[ci];
-    const t = segLen > 0 ? (target - cum[ci]) / segLen : 0;
-
-    result.push({
-      lat: coords[ci][0] + t * (coords[ci + 1][0] - coords[ci][0]),
-      lng: coords[ci][1] + t * (coords[ci + 1][1] - coords[ci][1]),
-    });
+  // Use junction nodes (graph intersections) as waypoints.
+  // These are the critical decision points where the path turns or changes
+  // road type — much better than uniform sampling which can miss key turns.
+  // Exclude last edge's target (= endKey, added by caller).
+  const junctions: Waypoint[] = [];
+  for (let i = 0; i < edgePath.length - 1; i++) {
+    const node = nodes.get(edgePath[i].target)!;
+    junctions.push({ lat: node.lat, lng: node.lng });
   }
 
-  return result;
+  if (junctions.length === 0) {
+    const coords = edgePath[0].coords;
+    const mid = coords[Math.floor(coords.length / 2)];
+    return [{ lat: mid[0], lng: mid[1] }];
+  }
+
+  if (junctions.length <= MAX_SAMPLES) {
+    return junctions;
+  }
+
+  // Too many junctions — thin while preserving critical turn/type-change points
+  return thinJunctions(junctions, edgePath);
+}
+
+// ========== Waypoint thinning ==========
+
+function thinJunctions(junctions: Waypoint[], edgePath: GraphEdge[]): Waypoint[] {
+  // Mark junctions where infrastructure type changes — these represent
+  // critical routing decisions (e.g. entering a greenway to cross a busy road)
+  const isCritical: boolean[] = junctions.map((_, i) =>
+    edgePath[i].ct !== edgePath[i + 1].ct
+  );
+
+  const criticalIdx: number[] = [];
+  const otherIdx: number[] = [];
+  isCritical.forEach((c, i) => (c ? criticalIdx : otherIdx).push(i));
+
+  if (criticalIdx.length >= MAX_SAMPLES) {
+    // Even critical junctions exceed max — evenly sample from them
+    const step = criticalIdx.length / MAX_SAMPLES;
+    return Array.from({ length: MAX_SAMPLES }, (_, i) =>
+      junctions[criticalIdx[Math.min(Math.floor(i * step), criticalIdx.length - 1)]]
+    );
+  }
+
+  // Include all critical junctions, fill remaining slots evenly from non-critical
+  const selected = new Set(criticalIdx);
+  const remaining = MAX_SAMPLES - selected.size;
+
+  if (remaining > 0 && otherIdx.length > 0) {
+    const step = otherIdx.length / remaining;
+    for (let i = 0; i < remaining; i++) {
+      selected.add(otherIdx[Math.min(Math.floor(i * step), otherIdx.length - 1)]);
+    }
+  }
+
+  return Array.from(selected).sort((a, b) => a - b).map(i => junctions[i]);
+}
+
+// ========== Route classification ==========
+
+export type InfraTier = 'path' | 'good' | 'lane' | 'caution' | 'avoid' | 'none';
+
+const TIER_FROM_CT: Record<string, InfraTier> = {
+  'MUP_P': 'path', 'MUP_U': 'path', 'BL-MUP': 'path',
+  'NG': 'good', 'BBL': 'good',
+  'BL': 'lane', 'SR_LT': 'lane', 'SC': 'lane', 'BL-SR_LT': 'lane',
+  'SR_MT': 'caution', 'BL-SR_MT': 'caution', 'BL_VHT': 'caution',
+  'DC': 'avoid', 'SR_DC': 'avoid', 'BL-DC': 'avoid', 'SR_MT-DC': 'avoid',
+};
+
+const CLASSIFY_SNAP = 25; // meters — max distance to match a route point to PBOT edge
+
+/**
+ * For each coordinate on a computed route, classify what type of bike
+ * infrastructure it's on by matching against the nearest PBOT edge segment.
+ * Returns a parallel array of InfraTier values (one per coordinate).
+ */
+export function classifyRoute(coords: [number, number][]): InfraTier[] {
+  if (!nodes || !grid) return coords.map(() => 'none');
+
+  return coords.map(([lat, lng]) => {
+    const bLat = Math.floor(lat * 1000);
+    const bLng = Math.floor(lng * 1000);
+
+    let bestTier: InfraTier = 'none';
+    let bestDist = CLASSIFY_SNAP;
+    const visited = new Set<string>();
+
+    for (let dl = -1; dl <= 1; dl++) {
+      for (let dn = -1; dn <= 1; dn++) {
+        const keys = grid!.get(`${bLat + dl},${bLng + dn}`);
+        if (!keys) continue;
+        for (const k of keys) {
+          const n = nodes!.get(k)!;
+          for (const edge of n.edges) {
+            // Deduplicate: each edge exists in both directions
+            const ek = k < edge.target ? `${k}|${edge.target}` : `${edge.target}|${k}`;
+            if (visited.has(ek)) continue;
+            visited.add(ek);
+
+            const tier = TIER_FROM_CT[edge.ct];
+            if (!tier) continue; // skip _GAP and unknown types
+
+            // Distance from route point to closest point on the edge geometry
+            const d = pointToEdgeDist([lat, lng], edge.coords);
+            if (d < bestDist) {
+              bestDist = d;
+              bestTier = tier;
+            }
+          }
+        }
+      }
+    }
+    return bestTier;
+  });
+}
+
+/** Minimum distance from point p to any segment of a polyline. */
+function pointToEdgeDist(p: [number, number], coords: [number, number][]): number {
+  if (coords.length === 0) return Infinity;
+  if (coords.length === 1) return haversine(p, coords[0]);
+  let min = Infinity;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const d = pointToSegDist(p, coords[i], coords[i + 1]);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
+/** Distance from point p to the closest point on segment a–b (flat-earth approx). */
+function pointToSegDist(p: [number, number], a: [number, number], b: [number, number]): number {
+  const cosLat = Math.cos(p[0] * Math.PI / 180);
+  const px = (p[1] - a[1]) * cosLat;
+  const py = p[0] - a[0];
+  const dx = (b[1] - a[1]) * cosLat;
+  const dy = b[0] - a[0];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-12) return haversine(p, a);
+  const t = Math.max(0, Math.min(1, (px * dx + py * dy) / lenSq));
+  return haversine(p, [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
 }

@@ -7,11 +7,11 @@ let visible = false;
 type Tier = 'best' | 'good' | 'ok' | 'caution' | 'avoid';
 
 const TIER_STYLES: Record<Tier, { color: string; weight: number; opacity: number; dashArray?: string }> = {
-  best:    { color: '#2d8a4e', weight: 4, opacity: 0.8 },
-  good:    { color: '#27ae60', weight: 3, opacity: 0.7 },
-  ok:      { color: '#3498db', weight: 3, opacity: 0.6 },
-  caution: { color: '#f39c12', weight: 2, opacity: 0.5 },
-  avoid:   { color: '#e74c3c', weight: 2, opacity: 0.6, dashArray: '6,4' },
+  best:    { color: '#00c853', weight: 4, opacity: 0.85 },
+  good:    { color: '#2ecc71', weight: 3, opacity: 0.8 },
+  ok:      { color: '#2196f3', weight: 3, opacity: 0.75 },
+  caution: { color: '#ff9800', weight: 2, opacity: 0.7 },
+  avoid:   { color: '#e74c3c', weight: 2, opacity: 0.75, dashArray: '6,4' },
 };
 
 const CONNECTION_TYPE_LABELS: Record<string, string> = {

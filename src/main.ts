@@ -12,6 +12,7 @@ import {
   setPlanningMarkersVisible,
 } from './map';
 import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile } from './router';
+import { classifyRoute } from './pbot-graph';
 import type { RouteProfileKey } from './router';
 import { initSearch, getActiveInput, reverseGeocode, setSearchBias } from './search';
 import { getCurrentPosition } from './geolocation';
@@ -240,7 +241,9 @@ function handleMapTap(latlng: L.LatLng): void {
     resolveAndDisplay('end', latlng.lat, latlng.lng);
     endInput.blur();
     if (!state.start) (startInput as HTMLInputElement).focus();
-  } else {
+  } else if (!state.route) {
+    // Only auto-fill from map taps when no route is showing.
+    // Once a route exists, user must tap an input field first.
     if (!state.end) {
       state.end = latlng;
       setEndMarker(latlng);
@@ -254,6 +257,9 @@ function handleMapTap(latlng: L.LatLng): void {
       setEndMarker(latlng);
       resolveAndDisplay('end', latlng.lat, latlng.lng);
     }
+  } else {
+    // Route is showing and no input focused — ignore tap
+    return;
   }
 
   tryRoute();
@@ -315,7 +321,7 @@ async function handleRoute(): Promise<void> {
     const route = await computeGuidedRoute(state.start, state.end);
     if (requestId !== routeRequestId) return;
     state.route = route;
-    displayRoute(route.coordinates);
+    displayRoute(route.coordinates, classifyRoute(route.coordinates));
     showRoutePanel(route);
   } catch (err) {
     if (requestId !== routeRequestId) return;
@@ -338,6 +344,10 @@ function handleClear(): void {
   ($('input-end') as HTMLInputElement).value = '';
   $('route-panel').classList.add('hidden');
   $('loading').classList.add('hidden');
+  // Clear stale search results
+  const results = $('search-results');
+  results.innerHTML = '';
+  results.classList.remove('visible');
 }
 
 function showRoutePanel(route: RouteResult): void {
@@ -474,7 +484,7 @@ async function handleSaveRoute(): Promise<void> {
   state.end = L.latLng(last.lat, last.lng);
   setStartMarker(state.start);
   setEndMarker(state.end);
-  displayRoute(route.coordinates);
+  displayRoute(route.coordinates, classifyRoute(route.coordinates));
   showRoutePanel(route);
   resolveAndDisplay('start', first.lat, first.lng);
   resolveAndDisplay('end', last.lat, last.lng);
@@ -565,7 +575,7 @@ async function handleLoadSavedRoute(id: string): Promise<void> {
 
   setStartMarker(state.start);
   setEndMarker(state.end);
-  displayRoute(route.coordinates);
+  displayRoute(route.coordinates, classifyRoute(route.coordinates));
   showRoutePanel(route);
 
   resolveAndDisplay('start', first.lat, first.lng);
@@ -602,7 +612,7 @@ function handleStopNav(): void {
   setPlanningMarkersVisible(true);
 
   if (state.route) {
-    displayRoute(state.route.coordinates);
+    displayRoute(state.route.coordinates, classifyRoute(state.route.coordinates));
   }
 }
 

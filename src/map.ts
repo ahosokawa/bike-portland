@@ -7,7 +7,7 @@ const NAV_ZOOM = 17;
 let map: L.Map;
 let startMarker: L.Marker | null = null;
 let endMarker: L.Marker | null = null;
-let routeLine: L.Polyline | null = null;
+let routeLines: L.Polyline[] = [];
 let userMarker: L.Marker | null = null;
 let accuracyCircle: L.Circle | null = null;
 
@@ -88,21 +88,58 @@ export function setEndMarker(latlng: L.LatLng): void {
   }
 }
 
-export function displayRoute(coords: [number, number][]): void {
+import type { InfraTier } from './pbot-graph';
+
+const TIER_COLORS: Record<InfraTier, string> = {
+  path:    '#00c853', // bright green — multi-use paths
+  good:    '#2ecc71', // green — greenways, buffered lanes
+  lane:    '#2196f3', // blue — bike lanes, low traffic
+  caution: '#ff9800', // orange — medium/high traffic
+  avoid:   '#e74c3c', // red — difficult connections
+  none:    '#9e9e9e', // gray — no bike infrastructure data
+};
+
+export function displayRoute(coords: [number, number][], tiers?: InfraTier[]): void {
   clearRoute();
-  routeLine = L.polyline(coords, {
-    color: '#2d8a4e',
-    weight: 5,
-    opacity: 0.85,
-  }).addTo(map);
-  map.fitBounds(routeLine.getBounds(), { padding: [60, 60] });
+
+  if (tiers && tiers.length === coords.length) {
+    // Draw color-coded segments grouped by tier
+    let segStart = 0;
+    for (let i = 1; i <= coords.length; i++) {
+      if (i < coords.length && tiers[i] === tiers[segStart]) continue;
+      // End of a run — draw this segment
+      const segment = coords.slice(segStart, i + 1 > coords.length ? i : i + 1);
+      if (segment.length >= 2) {
+        const line = L.polyline(segment, {
+          color: TIER_COLORS[tiers[segStart]],
+          weight: 6,
+          opacity: 0.95,
+        }).addTo(map);
+        routeLines.push(line);
+      }
+      segStart = i;
+    }
+  } else {
+    // Fallback: single-color route
+    const line = L.polyline(coords, {
+      color: '#2ecc71',
+      weight: 6,
+      opacity: 0.95,
+    }).addTo(map);
+    routeLines.push(line);
+  }
+
+  if (routeLines.length > 0) {
+    const group = L.featureGroup(routeLines);
+    map.fitBounds(group.getBounds(), { padding: [60, 60] });
+  }
 }
 
 export function clearRoute(): void {
-  if (routeLine) {
-    map.removeLayer(routeLine);
-    routeLine = null;
+  for (const line of routeLines) {
+    map.removeLayer(line);
   }
+  routeLines = [];
 }
 
 export function clearMarkers(): void {
