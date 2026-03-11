@@ -18,6 +18,7 @@ interface GraphEdge {
   ct: string;                   // ConnectionType (uppercase)
   distance: number;             // actual meters
   coords: [number, number][];   // [lat, lng] points along segment
+  name: string;                 // street/path name from PBOT StreetName
 }
 
 // ========== Per-profile edge weights ==========
@@ -58,9 +59,8 @@ const PROFILE_MIN_COSTS: Record<GuidanceProfile, Record<string, number>> = {
 
 const MIN_WEIGHT = 0.15;       // smallest multiplier across all profiles (keeps A* heuristic admissible)
 const MAX_SNAP_DIST = 500;     // max meters from point to nearest PBOT node
-const MAX_SAMPLES = 25;        // cap waypoints passed to BRouter
 const GAP_BRIDGE_DIST = 250;   // max meters for synthetic gap-bridging edges
-const MIN_SPACING = 200;        // meters - minimum distance between consecutive waypoints
+const LONG_EDGE = 500;         // meters - edges longer than this get a midpoint sample
 
 // ========== Module state ==========
 
@@ -110,6 +110,7 @@ export function buildGraph(geojson: any): void {
   for (const f of geojson.features) {
     const geom = f.geometry;
     const ct = (f.properties?.ConnectionType || '').toUpperCase();
+    const name = f.properties?.StreetName || '';
 
     const lines: number[][][] =
       geom.type === 'MultiLineString' ? geom.coordinates :
@@ -134,8 +135,8 @@ export function buildGraph(geojson: any): void {
       }
 
       // Bidirectional edges — weight computed at query time per profile
-      _n.get(kA)!.edges.push({ target: kB, ct, distance: dist, coords: pts });
-      _n.get(kB)!.edges.push({ target: kA, ct, distance: dist, coords: [...pts].reverse() });
+      _n.get(kA)!.edges.push({ target: kB, ct, distance: dist, coords: pts, name });
+      _n.get(kB)!.edges.push({ target: kA, ct, distance: dist, coords: [...pts].reverse(), name });
     }
   }
 
@@ -220,8 +221,8 @@ function addGapBridges(): void {
           const severity = crossesBusyRoad(node.lat, node.lng, other.lat, other.lng);
           const ct = severity === 'major' ? '_GAP_MAJOR' : severity === 'secondary' ? '_GAP_BUSY' : '_GAP';
           const coords: [number, number][] = [[node.lat, node.lng], [other.lat, other.lng]];
-          node.edges.push({ target: otherKey, ct, distance: d, coords });
-          other.edges.push({ target: key, ct, distance: d, coords: [[other.lat, other.lng], [node.lat, node.lng]] });
+          node.edges.push({ target: otherKey, ct, distance: d, coords, name: '' });
+          other.edges.push({ target: key, ct, distance: d, coords: [[other.lat, other.lng], [node.lat, node.lng]], name: '' });
           connected.add(otherKey);
         }
       }
@@ -354,136 +355,62 @@ function astar(startKey: string, endKey: string, weights: Record<string, number>
   return path;
 }
 
-// ========== Minimum-spacing filter ==========
+// ========== Public types ==========
 
-/** Drop intermediate waypoints that are too close together, preventing
- *  zigzag via-points on parallel one-way streets (e.g. Broadway/Weidler). */
-function enforceMinSpacing(waypoints: Waypoint[]): Waypoint[] {
-  if (waypoints.length <= 2) return waypoints;
-  const result: Waypoint[] = [waypoints[0]];
-  for (let i = 1; i < waypoints.length - 1; i++) {
-    const last = result[result.length - 1];
-    if (haversine([last.lat, last.lng], [waypoints[i].lat, waypoints[i].lng]) >= MIN_SPACING) {
-      result.push(waypoints[i]);
-    }
-  }
-  // Always keep the last waypoint (final infrastructure decision point)
-  result.push(waypoints[waypoints.length - 1]);
-  return result;
+export interface PbotEdge {
+  ct: string;                   // ConnectionType (uppercase)
+  distance: number;             // actual meters
+  coords: [number, number][];   // [lat, lng] points along segment
+  name: string;                 // street/path name from PBOT StreetName
 }
 
-// ========== Forward-progress filter ==========
-
-/** Remove waypoints that go significantly backward relative to the start→end
- *  direction, preventing BRouter from backtracking. Allows small backward
- *  steps (within 10% of route length) for legitimate detours to reach a MUP. */
-function enforceForwardProgress(
-  waypoints: Waypoint[],
-  startLat: number, startLng: number,
-  endLat: number, endLng: number,
-): Waypoint[] {
-  if (waypoints.length <= 1) return waypoints;
-
-  const cosLat = Math.cos(((startLat + endLat) / 2) * Math.PI / 180);
-  const dx = (endLng - startLng) * cosLat;
-  const dy = endLat - startLat;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq < 1e-12) return waypoints;
-
-  function project(wp: Waypoint): number {
-    const px = (wp.lng - startLng) * cosLat;
-    const py = wp.lat - startLat;
-    return (px * dx + py * dy) / lenSq;
-  }
-
-  const result: Waypoint[] = [];
-  let maxProj = -Infinity;
-
-  for (const wp of waypoints) {
-    const proj = project(wp);
-    if (proj >= maxProj - 0.10) {
-      result.push(wp);
-      maxProj = Math.max(maxProj, proj);
-    }
-  }
-
-  return result;
-}
-
-// ========== River-crossing filter ==========
-
-// The Willamette River runs north-south through Portland. PBOT data includes
-// east-bank waterfront paths whose coordinates sit right at the river's edge
-// (~-122.666 to -122.669). BRouter's OSM network doesn't always have matching
-// roads there, causing it to cross bridges to reach these waypoints.
-// When start and end are both well inland on the same side, we filter out
-// waypoints in the waterfront "danger zone" that BRouter can't reliably reach.
-// River corridor: the Willamette runs at ~-122.667. PBOT data includes
-// east-bank waterfront paths at -122.665 to -122.669 that BRouter can't
-// reliably route to without crossing bridges. When start and end are on
-// the same side, nudge river-corridor waypoints to the nearest safe node.
-const RIVER_CORRIDOR_EAST = -122.665;
-const RIVER_CORRIDOR_WEST = -122.672;
-const INLAND_THRESHOLD = -122.660;
-
-function fixRiverWaypoints(
-  waypoints: Waypoint[],
-  startLng: number, endLng: number,
-): Waypoint[] {
-  if (!nodes || !grid) return waypoints;
-
-  const startEast = startLng > INLAND_THRESHOLD;
-  const endEast = endLng > INLAND_THRESHOLD;
-  const startWest = startLng < RIVER_CORRIDOR_WEST;
-  const endWest = endLng < RIVER_CORRIDOR_WEST;
-
-  if (!((startEast && endEast) || (startWest && endWest))) return waypoints;
-
-  // Determine which side is safe
-  const safeSide = startEast ? 'east' : 'west';
-
-  return waypoints.map(wp => {
-    const inCorridor = wp.lng <= RIVER_CORRIDOR_EAST && wp.lng >= RIVER_CORRIDOR_WEST;
-    if (!inCorridor) return wp;
-
-    // Find the nearest PBOT node that's safely on the correct side
-    const bLat = Math.floor(wp.lat * 1000);
-    const bLng = Math.floor(wp.lng * 1000);
-    let bestKey: string | null = null;
-    let bestDist = Infinity;
-
-    for (let dl = -3; dl <= 3; dl++) {
-      for (let dn = -3; dn <= 3; dn++) {
-        const keys = grid!.get(`${bLat + dl},${bLng + dn}`);
-        if (!keys) continue;
-        for (const k of keys) {
-          const n = nodes!.get(k)!;
-          // Must be on the safe side
-          if (safeSide === 'east' && n.lng <= RIVER_CORRIDOR_EAST) continue;
-          if (safeSide === 'west' && n.lng >= RIVER_CORRIDOR_WEST) continue;
-          const d = haversine([wp.lat, wp.lng], [n.lat, n.lng]);
-          if (d < bestDist) { bestDist = d; bestKey = k; }
-        }
-      }
-    }
-
-    if (bestKey && bestDist < 500) {
-      const n = nodes!.get(bestKey)!;
-      return { lat: n.lat, lng: n.lng };
-    }
-    // Can't find a safe replacement — drop this waypoint
-    return null;
-  }).filter((wp): wp is Waypoint => wp !== null);
+export interface PbotPathResult {
+  edges: PbotEdge[];
+  startSnapDist: number;  // meters from start point to first PBOT node
+  endSnapDist: number;    // meters from last PBOT node to end point
+  startNode: { lat: number; lng: number };
+  endNode: { lat: number; lng: number };
 }
 
 // ========== Public API ==========
 
 /**
+ * Find the A* path through the PBOT bike network between two points.
+ * Returns the raw edge path with full geometry — caller renders the
+ * coordinates directly instead of feeding them as waypoints to BRouter.
+ */
+export function findPbotPath(
+  startLat: number, startLng: number,
+  endLat: number, endLng: number,
+  profile: GuidanceProfile = 'safest',
+): PbotPathResult | null {
+  if (!nodes) return null;
+
+  const sk = snap(startLat, startLng);
+  const ek = snap(endLat, endLng);
+  if (!sk || !ek || sk === ek) return null;
+
+  const weights = PROFILE_WEIGHTS[profile];
+  const minCosts = PROFILE_MIN_COSTS[profile];
+  const edgePath = astar(sk, ek, weights, minCosts);
+  if (!edgePath || edgePath.length === 0) return null;
+
+  const startNode = nodes.get(sk)!;
+  const endNode = nodes.get(ek)!;
+
+  return {
+    edges: edgePath.map(e => ({ ct: e.ct, distance: e.distance, coords: e.coords, name: e.name })),
+    startSnapDist: haversine([startLat, startLng], [startNode.lat, startNode.lng]),
+    endSnapDist: haversine([endLat, endLng], [endNode.lat, endNode.lng]),
+    startNode: { lat: startNode.lat, lng: startNode.lng },
+    endNode: { lat: endNode.lat, lng: endNode.lng },
+  };
+}
+
+/**
  * Find intermediate waypoints through the PBOT bike network between two points.
- * The profile controls how aggressively the path favors dedicated bike infrastructure:
- *   - 'safest': strongly prefers MUPs and greenways, penalizes shared roads
- * Returns waypoints (excluding start/end) suitable for passing to BRouter,
- * or null if the points are too far from the network or no path exists.
+ * @deprecated Use findPbotPath instead — this was used to guide BRouter but
+ * the new approach renders PBOT geometry directly.
  */
 export function findGuidedWaypoints(
   startLat: number, startLng: number,
@@ -501,72 +428,26 @@ export function findGuidedWaypoints(
   const edgePath = astar(sk, ek, weights, minCosts);
   if (!edgePath || edgePath.length === 0) return null;
 
-  if (edgePath.length === 1) {
-    // Single edge — sample its midpoint so BRouter follows it
-    const coords = edgePath[0].coords;
-    const mid = coords[Math.floor(coords.length / 2)];
-    return [{ lat: mid[0], lng: mid[1] }];
-  }
+  const waypoints: Waypoint[] = [];
 
-  // Use junction nodes (graph intersections) as waypoints.
-  // These are the critical decision points where the path turns or changes
-  // road type — much better than uniform sampling which can miss key turns.
-  // Exclude last edge's target (= endKey, added by caller).
-  const junctions: Waypoint[] = [];
-  for (let i = 0; i < edgePath.length - 1; i++) {
-    const node = nodes.get(edgePath[i].target)!;
-    junctions.push({ lat: node.lat, lng: node.lng });
-  }
+  for (let i = 0; i < edgePath.length; i++) {
+    const edge = edgePath[i];
 
-  if (junctions.length === 0) {
-    const coords = edgePath[0].coords;
-    const mid = coords[Math.floor(coords.length / 2)];
-    return [{ lat: mid[0], lng: mid[1] }];
-  }
+    if (edge.distance > LONG_EDGE && edge.coords.length > 2) {
+      const midIdx = Math.floor(edge.coords.length / 2);
+      const pt = edge.coords[midIdx];
+      waypoints.push({ lat: pt[0], lng: pt[1] });
+    }
 
-  const sampled = junctions.length <= MAX_SAMPLES
-    ? junctions
-    : thinJunctions(junctions, edgePath);
-
-  const spaced = enforceMinSpacing(sampled);
-  const noRiverDetour = fixRiverWaypoints(spaced, startLng, endLng);
-  return enforceForwardProgress(noRiverDetour, startLat, startLng, endLat, endLng);
-}
-
-// ========== Waypoint thinning ==========
-
-function thinJunctions(junctions: Waypoint[], edgePath: GraphEdge[]): Waypoint[] {
-  // Mark junctions where infrastructure type changes — these represent
-  // critical routing decisions (e.g. entering a greenway to cross a busy road)
-  const isCritical: boolean[] = junctions.map((_, i) =>
-    edgePath[i].ct !== edgePath[i + 1].ct
-  );
-
-  const criticalIdx: number[] = [];
-  const otherIdx: number[] = [];
-  isCritical.forEach((c, i) => (c ? criticalIdx : otherIdx).push(i));
-
-  if (criticalIdx.length >= MAX_SAMPLES) {
-    // Even critical junctions exceed max — evenly sample from them
-    const step = criticalIdx.length / MAX_SAMPLES;
-    return Array.from({ length: MAX_SAMPLES }, (_, i) =>
-      junctions[criticalIdx[Math.min(Math.floor(i * step), criticalIdx.length - 1)]]
-    );
-  }
-
-  // Include all critical junctions, fill remaining slots evenly from non-critical
-  const selected = new Set(criticalIdx);
-  const remaining = MAX_SAMPLES - selected.size;
-
-  if (remaining > 0 && otherIdx.length > 0) {
-    const step = otherIdx.length / remaining;
-    for (let i = 0; i < remaining; i++) {
-      selected.add(otherIdx[Math.min(Math.floor(i * step), otherIdx.length - 1)]);
+    if (i < edgePath.length - 1) {
+      const node = nodes.get(edge.target)!;
+      waypoints.push({ lat: node.lat, lng: node.lng });
     }
   }
 
-  return Array.from(selected).sort((a, b) => a - b).map(i => junctions[i]);
+  return waypoints.length > 0 ? waypoints : null;
 }
+
 
 // ========== Route classification ==========
 

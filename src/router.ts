@@ -1,10 +1,14 @@
 import type { LatLng } from 'leaflet';
 import type { RouteResult, TurnInstruction, Waypoint } from './types';
-import { findGuidedWaypoints, isGraphReady } from './pbot-graph';
-import type { GuidanceProfile } from './pbot-graph';
-import { haversine as hav } from './geo';
+import { haversine as hav, computeDistance } from './geo';
+import { findPbotPath } from './pbot-graph';
+import type { PbotEdge, PbotPathResult } from './pbot-graph';
 
 const BROUTER_URL = 'https://brouter.de/brouter';
+
+// Skip BRouter first/last mile if the snap distance is under this threshold —
+// the user is close enough to the PBOT network that a straight walk is fine.
+const SNAP_THRESHOLD = 100; // meters
 
 // Profiles ordered from safest to fastest
 export const ROUTE_PROFILES = {
@@ -77,25 +81,38 @@ export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteRes
 }
 
 /**
- * PBOT-guided routing: pathfinds through Portland's bike network to find
- * intermediate waypoints, then routes through them with BRouter.
- * Falls back to standard BRouter if the graph isn't ready or points are
- * too far from the bike network.
- * Skipped for the "balanced" (Direct) profile.
+ * Route using PBOT bike network A* path for the core (safest profile),
+ * with BRouter for first/last mile. "balanced" profile uses pure BRouter.
  */
 export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<RouteResult> {
-  if (currentProfile !== 'balanced' && isGraphReady()) {
-    const guided = findGuidedWaypoints(start.lat, start.lng, end.lat, end.lng, currentProfile as GuidanceProfile);
-    if (guided && guided.length > 0) {
-      const waypoints: Waypoint[] = [
-        { lat: start.lat, lng: start.lng },
-        ...guided,
-        { lat: end.lat, lng: end.lng },
-      ];
-      return computeRouteMulti(waypoints);
-    }
+  // "Direct" mode — pure BRouter, no PBOT guidance
+  if (currentProfile !== 'safest') {
+    return computeRoute(start, end);
   }
-  return computeRoute(start, end);
+
+  const pbotPath = findPbotPath(start.lat, start.lng, end.lat, end.lng);
+  if (!pbotPath) {
+    return computeRoute(start, end);
+  }
+
+  const pbotRoute = buildRouteFromPbotPath(pbotPath);
+
+  // Fetch first-mile and last-mile BRouter segments in parallel
+  const needFirstMile = pbotPath.startSnapDist > SNAP_THRESHOLD;
+  const needLastMile = pbotPath.endSnapDist > SNAP_THRESHOLD;
+
+  const [firstMile, lastMile] = await Promise.all([
+    needFirstMile
+      ? computeRoute(start, { lat: pbotPath.startNode.lat, lng: pbotPath.startNode.lng } as LatLng)
+          .catch(() => null)
+      : null,
+    needLastMile
+      ? computeRoute({ lat: pbotPath.endNode.lat, lng: pbotPath.endNode.lng } as LatLng, end)
+          .catch(() => null)
+      : null,
+  ]);
+
+  return stitchRoutes(start, end, firstMile, pbotRoute, lastMile);
 }
 
 export async function computeRouteMulti(waypoints: Waypoint[], profileOverride?: string): Promise<RouteResult> {
@@ -105,7 +122,200 @@ export async function computeRouteMulti(waypoints: Waypoint[], profileOverride?:
   return parseRouteFeature(feature);
 }
 
-// ========== Instructions parsing ==========
+// ========== PBOT path → RouteResult ==========
+
+function buildRouteFromPbotPath(path: PbotPathResult): RouteResult {
+  // Concatenate edge coordinates, deduplicating shared junction points
+  const coordinates: [number, number][] = [];
+  for (const edge of path.edges) {
+    const start = coordinates.length === 0 ? 0 : 1; // skip first point of subsequent edges (same as prev edge's last)
+    for (let i = start; i < edge.coords.length; i++) {
+      coordinates.push(edge.coords[i]);
+    }
+  }
+
+  const distance = computeDistance(coordinates);
+  const time = Math.round(distance / 4.2); // ~15 km/h average cycling speed
+  const elevations = coordinates.map(() => 0); // PBOT data has no elevation
+  const instructions = generatePbotInstructions(path.edges, coordinates, distance);
+
+  return { coordinates, distance, time, elevations, ascend: 0, descend: 0, instructions };
+}
+
+function generatePbotInstructions(edges: PbotEdge[], coordinates: [number, number][], totalDistance: number): TurnInstruction[] {
+  if (coordinates.length < 2) return [];
+
+  const instructions: TurnInstruction[] = [];
+  let cumulativeDist = 0;
+
+  // Start instruction
+  instructions.push({
+    text: edges[0].name ? `Start on ${edges[0].name}` : 'Start your ride',
+    distance: 0,
+    stepDistance: 0,
+    icon: 'start',
+    latlng: coordinates[0],
+  });
+
+  // Turn instructions at edge transitions where the street name changes
+  for (let i = 1; i < edges.length; i++) {
+    cumulativeDist += edges[i - 1].distance;
+    const prev = edges[i - 1];
+    const cur = edges[i];
+
+    // Only emit an instruction when the name changes (or either name is empty)
+    if (cur.name && cur.name === prev.name) continue;
+
+    const turnType = computeTurnType(prev, cur);
+    const text = cur.name
+      ? `${turnType} onto ${cur.name}`
+      : `${turnType}`;
+
+    instructions.push({
+      text,
+      distance: cumulativeDist,
+      stepDistance: edges[i - 1].distance,
+      icon: turnTypeIcon(turnType),
+      latlng: cur.coords[0],
+    });
+  }
+
+  // Arrive instruction
+  instructions.push({
+    text: 'Arrive at destination',
+    distance: totalDistance,
+    stepDistance: 0,
+    icon: 'arrive',
+    latlng: coordinates[coordinates.length - 1],
+  });
+
+  return instructions;
+}
+
+/** Compute the turn direction between two consecutive edges using bearing difference. */
+function computeTurnType(prev: PbotEdge, cur: PbotEdge): string {
+  const prevCoords = prev.coords;
+  const curCoords = cur.coords;
+
+  // Use the last segment of prev edge and first segment of cur edge
+  const a = prevCoords.length >= 2 ? prevCoords[prevCoords.length - 2] : prevCoords[0];
+  const b = prevCoords[prevCoords.length - 1]; // junction point
+  const c = curCoords.length >= 2 ? curCoords[1] : curCoords[0];
+
+  const bearingIn = bearing(a, b);
+  const bearingOut = bearing(b, c);
+  let diff = bearingOut - bearingIn;
+  // Normalize to -180..180
+  while (diff > 180) diff -= 360;
+  while (diff < -180) diff += 360;
+
+  if (Math.abs(diff) < 30) return 'Continue';
+  if (diff >= 30 && diff < 150) return 'Turn right';
+  if (diff <= -30 && diff > -150) return 'Turn left';
+  return 'Make a U-turn';
+}
+
+function bearing(a: [number, number], b: [number, number]): number {
+  const toRad = (deg: number) => deg * Math.PI / 180;
+  const dLng = toRad(b[1] - a[1]);
+  const y = Math.sin(dLng) * Math.cos(toRad(b[0]));
+  const x = Math.cos(toRad(a[0])) * Math.sin(toRad(b[0]))
+          - Math.sin(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.cos(dLng);
+  return Math.atan2(y, x) * 180 / Math.PI;
+}
+
+function turnTypeIcon(turnType: string): string {
+  if (turnType.includes('right')) return 'turn-right';
+  if (turnType.includes('left')) return 'turn-left';
+  if (turnType.includes('U-turn')) return 'u-turn';
+  return 'continue';
+}
+
+// ========== Route stitching ==========
+
+function stitchRoutes(
+  start: LatLng,
+  end: LatLng,
+  firstMile: RouteResult | null,
+  pbotRoute: RouteResult,
+  lastMile: RouteResult | null,
+): RouteResult {
+  const coordinates: [number, number][] = [];
+  const elevations: number[] = [];
+  const instructions: TurnInstruction[] = [];
+  let distance = 0;
+  let ascend = 0;
+  let descend = 0;
+
+  // First mile (BRouter: start → PBOT network entry)
+  if (firstMile) {
+    coordinates.push(...firstMile.coordinates);
+    elevations.push(...firstMile.elevations);
+    instructions.push(...firstMile.instructions.filter(i => i.icon !== 'arrive'));
+    distance += firstMile.distance;
+    ascend += firstMile.ascend;
+    descend += firstMile.descend;
+  } else {
+    // Direct line from start to first PBOT coord
+    coordinates.push([start.lat, start.lng]);
+    elevations.push(0);
+  }
+
+  // PBOT core (skip first coordinate if it's a duplicate of the last first-mile point)
+  const pbotStart = pbotRoute.coordinates.length > 0 ? 1 : 0;
+  for (let i = pbotStart; i < pbotRoute.coordinates.length; i++) {
+    coordinates.push(pbotRoute.coordinates[i]);
+    elevations.push(0);
+  }
+  // Adjust PBOT instructions' cumulative distances
+  const distOffset = distance;
+  for (const inst of pbotRoute.instructions) {
+    if (inst.icon === 'arrive' && lastMile) continue; // skip intermediate arrive
+    if (inst.icon === 'start' && firstMile) continue; // skip intermediate start
+    instructions.push({
+      ...inst,
+      distance: inst.distance + distOffset,
+    });
+  }
+  distance += pbotRoute.distance;
+
+  // Last mile (BRouter: PBOT network exit → end)
+  if (lastMile) {
+    const lastStart = lastMile.coordinates.length > 0 ? 1 : 0;
+    for (let i = lastStart; i < lastMile.coordinates.length; i++) {
+      coordinates.push(lastMile.coordinates[i]);
+      elevations.push(lastMile.elevations[i] ?? 0);
+    }
+    const lastOffset = distance;
+    for (const inst of lastMile.instructions) {
+      if (inst.icon === 'start') continue;
+      instructions.push({
+        ...inst,
+        distance: inst.distance + lastOffset,
+      });
+    }
+    distance += lastMile.distance;
+    ascend += lastMile.ascend;
+    descend += lastMile.descend;
+  } else if (pbotRoute.instructions.length > 0) {
+    // Ensure we have an arrive instruction
+    const last = instructions[instructions.length - 1];
+    if (!last || !last.text.toLowerCase().includes('arrive')) {
+      instructions.push({
+        text: 'Arrive at destination',
+        distance,
+        stepDistance: 0,
+        icon: 'arrive',
+        latlng: coordinates[coordinates.length - 1],
+      });
+    }
+  }
+
+  const time = Math.round(distance / 4.2);
+  return { coordinates, distance, time, elevations, ascend, descend, instructions };
+}
+
+// ========== Instructions parsing (BRouter) ==========
 
 function parseInstructions(feature: any): TurnInstruction[] {
   const instructions: TurnInstruction[] = [];
