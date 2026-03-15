@@ -1,6 +1,6 @@
 import type { LatLng } from 'leaflet';
-import type { RouteResult, TurnInstruction, Waypoint } from './types';
-import { haversine as hav, computeDistance } from './geo';
+import type { RouteResult, TurnInstruction, Waypoint, BRouterFeature } from './types';
+import { haversine as hav, computeDistance, bearing } from './geo';
 import { findPbotPath } from './pbot-graph';
 import type { PbotEdge, PbotPathResult } from './pbot-graph';
 
@@ -30,7 +30,7 @@ export function getRouteProfile(): RouteProfileKey {
 
 // ========== Shared fetch + parse ==========
 
-async function fetchRoute(lonlats: string, profileOverride?: string): Promise<any> {
+async function fetchRoute(lonlats: string, profileOverride?: string): Promise<BRouterFeature> {
   const profile = profileOverride || ROUTE_PROFILES[currentProfile].profile;
   const params = new URLSearchParams({
     lonlats,
@@ -44,7 +44,7 @@ async function fetchRoute(lonlats: string, profileOverride?: string): Promise<an
     throw new Error(`Routing failed: ${res.status} ${res.statusText}`);
   }
 
-  const geojson = await res.json();
+  const geojson = await res.json() as { features: BRouterFeature[] };
   const feature = geojson.features[0];
   if (!feature) {
     throw new Error('No route found');
@@ -52,7 +52,7 @@ async function fetchRoute(lonlats: string, profileOverride?: string): Promise<an
   return feature;
 }
 
-function parseRouteFeature(feature: any): RouteResult {
+function parseRouteFeature(feature: BRouterFeature): RouteResult {
   const coords: [number, number][] = feature.geometry.coordinates.map(
     (c: number[]) => [c[1], c[0]] as [number, number]
   );
@@ -215,15 +215,6 @@ function computeTurnType(prev: PbotEdge, cur: PbotEdge): string {
   return 'Make a U-turn';
 }
 
-function bearing(a: [number, number], b: [number, number]): number {
-  const toRad = (deg: number) => deg * Math.PI / 180;
-  const dLng = toRad(b[1] - a[1]);
-  const y = Math.sin(dLng) * Math.cos(toRad(b[0]));
-  const x = Math.cos(toRad(a[0])) * Math.sin(toRad(b[0]))
-          - Math.sin(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.cos(dLng);
-  return Math.atan2(y, x) * 180 / Math.PI;
-}
-
 function turnTypeIcon(turnType: string): string {
   if (turnType.includes('right')) return 'turn-right';
   if (turnType.includes('left')) return 'turn-left';
@@ -317,9 +308,9 @@ function stitchRoutes(
 
 // ========== Instructions parsing (BRouter) ==========
 
-function parseInstructions(feature: any): TurnInstruction[] {
+function parseInstructions(feature: BRouterFeature): TurnInstruction[] {
   const instructions: TurnInstruction[] = [];
-  const messages: any[] = feature.properties?.messages;
+  const messages = feature.properties?.messages;
 
   if (!messages || messages.length < 2) {
     return generateBasicInstructions(feature);
@@ -372,7 +363,7 @@ function parseInstructions(feature: any): TurnInstruction[] {
   return instructions;
 }
 
-function generateBasicInstructions(feature: any): TurnInstruction[] {
+function generateBasicInstructions(feature: BRouterFeature): TurnInstruction[] {
   const coords = feature.geometry.coordinates;
   if (!coords || coords.length < 2) return [];
 
@@ -395,23 +386,12 @@ function directionIcon(direction: string): string {
   return 'continue';
 }
 
-export { haversine, computeDistance } from './geo';
-
 // ========== Backtracking detection (diagnostic) ==========
 
 /** Detect bearing reversals in a route for debugging.
  *  Logs warnings for segments where the route doubles back. */
 export function detectBacktracking(coords: [number, number][]): void {
   if (coords.length < 3) return;
-
-  const toRad = (deg: number) => deg * Math.PI / 180;
-  function bearing(a: [number, number], b: [number, number]): number {
-    const dLng = toRad(b[1] - a[1]);
-    const y = Math.sin(dLng) * Math.cos(toRad(b[0]));
-    const x = Math.cos(toRad(a[0])) * Math.sin(toRad(b[0]))
-            - Math.sin(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.cos(dLng);
-    return Math.atan2(y, x) * 180 / Math.PI;
-  }
 
   // Sample bearings at ~100m intervals to avoid noise from small wiggles
   const samples: { bearing: number; idx: number }[] = [];
@@ -429,7 +409,7 @@ export function detectBacktracking(coords: [number, number][]): void {
   for (let i = 1; i < samples.length; i++) {
     let diff = Math.abs(samples[i].bearing - samples[i - 1].bearing);
     if (diff > 180) diff = 360 - diff;
-    if (diff > 120) {
+    if (diff > 120 && import.meta.env.DEV) {
       console.warn(
         `[PedalPDX] Possible backtracking at coord index ${samples[i].idx}: ` +
         `bearing changed ${diff.toFixed(0)}° (${samples[i - 1].bearing.toFixed(0)}° → ${samples[i].bearing.toFixed(0)}°)`

@@ -14,7 +14,7 @@ import {
 import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile, detectBacktracking } from './router';
 import { classifyRoute } from './pbot-graph';
 import type { RouteProfileKey } from './router';
-import { initSearch, getActiveInput, reverseGeocode, setSearchBias } from './search';
+import { initSearch, reverseGeocode, setSearchBias } from './search';
 import { getCurrentPosition } from './geolocation';
 import { drawElevationProfile } from './elevation';
 import { loadPbotData, togglePbotLayer } from './pbot-layer';
@@ -33,6 +33,7 @@ import { saveRoute as dbSaveRoute, getAllRoutes, getRoute, deleteRoute } from '.
 import type { NavUpdate } from './navigation';
 import type { AppState, RouteResult, SavedRoute } from './types';
 import { turnIconSvg } from './icons';
+import { METERS_PER_MILE, FEET_PER_METER } from './geo';
 
 const state: AppState = {
   mode: 'start',
@@ -359,9 +360,9 @@ function showRoutePanel(route: RouteResult): void {
   $('route-details').classList.add('collapsed');
   $('btn-route-details').classList.remove('expanded');
 
-  const miles = (route.distance / 1609.34).toFixed(1);
+  const miles = (route.distance / METERS_PER_MILE).toFixed(1);
   const minutes = Math.round(route.time / 60);
-  const ascendFt = Math.round(route.ascend * 3.281);
+  const ascendFt = Math.round(route.ascend * FEET_PER_METER);
 
   $('route-summary').innerHTML = `
     <div class="stat">
@@ -422,7 +423,7 @@ function onBuilderRouteComputed(route: RouteResult): void {
   // Just enable save — the builder draws the route on the map itself.
   // Do NOT show route panel or set state.route during building.
   ($('btn-save-route') as HTMLButtonElement).disabled = false;
-  const miles = (route.distance / 1609.34).toFixed(1);
+  const miles = (route.distance / METERS_PER_MILE).toFixed(1);
   $('builder-status').textContent = `${getWaypoints().length} points \u00B7 ${miles} mi`;
 }
 
@@ -505,7 +506,7 @@ async function handleShowSavedRoutes(): Promise<void> {
       <div class="saved-route-item" data-id="${r.id}">
         <div class="saved-route-info">
           <span class="saved-route-name">${escapeHtml(r.name)}</span>
-          <span class="saved-route-meta">${(r.distance / 1609.34).toFixed(1)} mi &middot; ${new Date(r.createdAt).toLocaleDateString()}</span>
+          <span class="saved-route-meta">${(r.distance / METERS_PER_MILE).toFixed(1)} mi &middot; ${new Date(r.createdAt).toLocaleDateString()}</span>
         </div>
         <button class="saved-route-delete" data-id="${r.id}" aria-label="Delete route">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -667,15 +668,15 @@ function onNavOffRoute(): void {
 
 function formatDist(meters: number): string {
   if (meters < 160) return `${Math.round(meters)} m`;
-  const mi = meters / 1609.34;
+  const mi = meters / METERS_PER_MILE;
   return `${mi.toFixed(1)} mi`;
 }
 
 function formatNavDist(meters: number): string {
   if (meters < 15) return 'Now';
-  const feet = Math.round(meters * 3.281);
+  const feet = Math.round(meters * FEET_PER_METER);
   if (feet <= 500) return `${Math.round(feet / 10) * 10} ft`;
-  const mi = meters / 1609.34;
+  const mi = meters / METERS_PER_MILE;
   if (mi < 0.15) return `${Math.round(feet / 50) * 50} ft`;
   return `${mi.toFixed(1)} mi`;
 }

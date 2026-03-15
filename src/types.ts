@@ -48,3 +48,17 @@ export interface SavedRoute {
   createdAt: number;
   updatedAt: number;
 }
+
+export interface BRouterFeature {
+  geometry: {
+    coordinates: number[][];
+  };
+  properties: {
+    'track-length'?: string;
+    'total-time'?: string;
+    'filtered ascend'?: string;
+    'filtered descend'?: string;
+    messages?: string[][];
+    [key: string]: unknown;
+  };
+}

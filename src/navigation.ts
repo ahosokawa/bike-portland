@@ -1,4 +1,4 @@
-import { haversine } from './geo';
+import { haversine, pointToSegProject, FEET_PER_METER, METERS_PER_TENTH_MILE } from './geo';
 import type { RouteResult, TurnInstruction } from './types';
 
 const OFF_ROUTE_THRESHOLD = 50; // meters
@@ -25,6 +25,7 @@ export type NavCallback = (update: NavUpdate) => void;
 
 let watchId: number | null = null;
 let wakeLock: WakeLockSentinel | null = null;
+let visibilityHandler: (() => void) | null = null;
 let route: RouteResult | null = null;
 let onUpdate: NavCallback | null = null;
 let onOffRoute: (() => void) | null = null;
@@ -171,7 +172,7 @@ function snapToRoute(lat: number, lng: number): SnapResult {
   for (let i = 0; i < coords.length - 1; i++) {
     const a = coords[i];
     const b = coords[i + 1];
-    const result = pointToSegment(lat, lng, a, b);
+    const result = pointToSegProject([lat, lng], a, b);
 
     if (result.distance < bestDist) {
       bestDist = result.distance;
@@ -187,37 +188,6 @@ function snapToRoute(lat: number, lng: number): SnapResult {
     distanceAlongRoute: bestAlongRoute,
     closestPoint: bestPoint,
   };
-}
-
-interface SegmentResult {
-  distance: number;
-  closest: [number, number];
-  t: number; // 0-1 fraction along segment
-}
-
-function pointToSegment(
-  lat: number, lng: number,
-  a: [number, number], b: [number, number],
-): SegmentResult {
-  // Project point onto segment in approximate Cartesian coordinates
-  const cosLat = Math.cos((lat * Math.PI) / 180);
-  const ax = a[1] * cosLat, ay = a[0];
-  const bx = b[1] * cosLat, by = b[0];
-  const px = lng * cosLat, py = lat;
-
-  const dx = bx - ax, dy = by - ay;
-  const lenSq = dx * dx + dy * dy;
-
-  let t = 0;
-  if (lenSq > 0) {
-    t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
-  }
-
-  const closestLat = a[0] + t * (b[0] - a[0]);
-  const closestLng = a[1] + t * (b[1] - a[1]);
-  const distance = haversine([lat, lng], [closestLat, closestLng]);
-
-  return { distance, closest: [closestLat, closestLng], t };
 }
 
 function findCurrentInstruction(distanceAlongRoute: number): {
@@ -276,9 +246,9 @@ function announceIfNeeded(
 
 function formatVoiceDistance(meters: number): string {
   if (meters < 30) return 'a few yards';
-  const feet = Math.round(meters * 3.281);
+  const feet = Math.round(meters * FEET_PER_METER);
   if (feet <= 200) return `${Math.round(feet / 10) * 10} feet`;
-  const tenths = Math.round(meters / 160.934);
+  const tenths = Math.round(meters / METERS_PER_TENTH_MILE);
   if (tenths <= 1) return 'a tenth of a mile';
   return `${tenths} tenths of a mile`;
 }
@@ -302,13 +272,14 @@ async function acquireWakeLock(): Promise<void> {
     if ('wakeLock' in navigator) {
       wakeLock = await navigator.wakeLock.request('screen');
       // Re-acquire on visibility change (iOS Safari releases it when tab hidden)
-      document.addEventListener('visibilitychange', async () => {
+      visibilityHandler = async () => {
         if (document.visibilityState === 'visible' && isNavigating()) {
           try {
             wakeLock = await navigator.wakeLock.request('screen');
           } catch { /* best effort */ }
         }
-      });
+      };
+      document.addEventListener('visibilitychange', visibilityHandler);
     }
   } catch {
     // Wake Lock not supported or denied — continue without it
@@ -316,6 +287,10 @@ async function acquireWakeLock(): Promise<void> {
 }
 
 function releaseWakeLock(): void {
+  if (visibilityHandler) {
+    document.removeEventListener('visibilitychange', visibilityHandler);
+    visibilityHandler = null;
+  }
   if (wakeLock) {
     wakeLock.release().catch(() => {});
     wakeLock = null;

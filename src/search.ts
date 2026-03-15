@@ -8,14 +8,6 @@ let biasBbox = '-123.0,45.3,-122.4,45.7'; // minLon,minLat,maxLon,maxLat
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let activeInput: 'start' | 'end' = 'end';
 
-export function getActiveInput(): 'start' | 'end' {
-  return activeInput;
-}
-
-export function setActiveInput(which: 'start' | 'end'): void {
-  activeInput = which;
-}
-
 /** Update the search bias from the current map viewport. */
 export function setSearchBias(lat: number, lon: number, bbox?: string): void {
   biasLat = lat;

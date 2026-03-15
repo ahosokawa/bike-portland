@@ -1,5 +1,10 @@
 // Shared geographic utility functions used across the routing pipeline.
 
+// ========== Unit conversion constants ==========
+export const METERS_PER_MILE = 1609.34;
+export const FEET_PER_METER = 3.281;
+export const METERS_PER_TENTH_MILE = 160.934;
+
 /** Haversine distance between two [lat, lng] points, in meters. */
 export function haversine(a: [number, number], b: [number, number]): number {
   const R = 6371000;
@@ -21,17 +26,35 @@ export function computeDistance(coords: [number, number][]): number {
   return total;
 }
 
-/** Distance from point p to the closest point on segment a–b (flat-earth approx), in meters. */
-export function pointToSegDist(p: [number, number], a: [number, number], b: [number, number]): number {
+/** Bearing from point a to point b in degrees. */
+export function bearing(a: [number, number], b: [number, number]): number {
+  const toRad = (deg: number) => deg * Math.PI / 180;
+  const dLng = toRad(b[1] - a[1]);
+  const y = Math.sin(dLng) * Math.cos(toRad(b[0]));
+  const x = Math.cos(toRad(a[0])) * Math.sin(toRad(b[0]))
+          - Math.sin(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.cos(dLng);
+  return Math.atan2(y, x) * 180 / Math.PI;
+}
+
+/** Project point p onto segment a–b, returning distance, closest point, and t fraction. */
+export function pointToSegProject(
+  p: [number, number], a: [number, number], b: [number, number]
+): { distance: number; closest: [number, number]; t: number } {
   const cosLat = Math.cos(p[0] * Math.PI / 180);
   const px = (p[1] - a[1]) * cosLat;
   const py = p[0] - a[0];
   const dx = (b[1] - a[1]) * cosLat;
   const dy = b[0] - a[0];
   const lenSq = dx * dx + dy * dy;
-  if (lenSq < 1e-12) return haversine(p, a);
+  if (lenSq < 1e-12) return { distance: haversine(p, a), closest: [a[0], a[1]], t: 0 };
   const t = Math.max(0, Math.min(1, (px * dx + py * dy) / lenSq));
-  return haversine(p, [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+  const closest: [number, number] = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+  return { distance: haversine(p, closest), closest, t };
+}
+
+/** Distance from point p to the closest point on segment a–b (flat-earth approx), in meters. */
+export function pointToSegDist(p: [number, number], a: [number, number], b: [number, number]): number {
+  return pointToSegProject(p, a, b).distance;
 }
 
 /** Minimum distance from point p to any segment of a polyline, in meters. */

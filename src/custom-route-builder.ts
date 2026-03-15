@@ -111,21 +111,6 @@ export function undoLastWaypoint(): void {
   }
 }
 
-export function removeWaypoint(index: number): void {
-  if (index < 0 || index >= waypoints.length) return;
-  waypoints.splice(index, 1);
-  rebuildMarkers();
-  updatePreviewLine();
-  notifyWaypointsChanged();
-
-  if (waypoints.length >= 2) {
-    autoCompute();
-  } else {
-    clearRouteLine();
-    lastRoute = null;
-  }
-}
-
 export function clearAllWaypoints(): void {
   for (const m of waypointMarkers) {
     map.removeLayer(m);
@@ -227,10 +212,3 @@ function autoCompute(): void {
     });
 }
 
-/** Load waypoints into the builder (for editing a saved route) */
-export function loadWaypoints(wps: Waypoint[]): void {
-  clearAllWaypoints();
-  for (const wp of wps) {
-    addWaypoint(L.latLng(wp.lat, wp.lng));
-  }
-}

@@ -79,7 +79,7 @@ src/
   saved-routes.ts         IndexedDB persistence for saved routes
   search.ts               Photon address search, reverse geocoding
   elevation.ts            Canvas-based elevation profile chart
-  geo.ts                  Shared geographic utilities (haversine, distances)
+  geo.ts                  Shared geographic utilities (haversine, bearing, projection, unit constants)
   busy-roads.ts           Busy road spatial index for crossing detection
   icons.ts                SVG icon generation
   geolocation.ts          Device GPS wrapper
