@@ -35,7 +35,7 @@
             <div class="field-divider"></div>
             <div class="route-field-row">
               <input id="input-end" class="route-input" type="text" placeholder="Choose destination" autocomplete="off" />
-              <button id="btn-clear" class="field-action-btn" title="Clear route" aria-label="Clear route">
+              <button id="btn-clear-end" class="field-action-btn" title="Clear destination" aria-label="Clear destination">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
@@ -76,6 +76,20 @@
             <div class="legend-item"><span class="legend-line" style="background:#ff9800"></span>Medium / High Traffic</div>
             <div class="legend-item"><span class="legend-line" style="background:#e74c3c"></span>Difficult Connection</div>
           </div>
+        </div>
+        <div class="layers-section">
+          <div class="layers-section-title">Home Address</div>
+          <div class="home-address-display">
+            <span id="home-address-text" class="home-address-text">Not set</span>
+          </div>
+          <button id="btn-set-home" class="layers-action-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            Set Home Address
+          </button>
+          <button id="btn-clear-home" class="layers-action-btn hidden">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            Clear Home Address
+          </button>
         </div>
         <div class="layers-section">
           <div class="layers-section-title">Custom Routes</div>

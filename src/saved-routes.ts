@@ -1,5 +1,5 @@
 import { openDB, type IDBPDatabase, type DBSchema } from 'idb';
-import type { SavedRoute, EdgePreference } from './types';
+import type { SavedRoute, EdgePreference, HomeAddress } from './types';
 
 interface PedalPDXDB extends DBSchema {
   savedRoutes: {
@@ -11,13 +11,17 @@ interface PedalPDXDB extends DBSchema {
     key: string;
     value: EdgePreference;
   };
+  settings: {
+    key: string;
+    value: unknown;
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<PedalPDXDB>> | null = null;
 
 export function getDB(): Promise<IDBPDatabase<PedalPDXDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<PedalPDXDB>('pedalpdx', 2, {
+    dbPromise = openDB<PedalPDXDB>('pedalpdx', 3, {
       upgrade(db, oldVersion) {
         if (oldVersion < 1) {
           const store = db.createObjectStore('savedRoutes', { keyPath: 'id' });
@@ -26,10 +30,29 @@ export function getDB(): Promise<IDBPDatabase<PedalPDXDB>> {
         if (oldVersion < 2) {
           db.createObjectStore('edgePreferences', { keyPath: 'edgeKey' });
         }
+        if (oldVersion < 3) {
+          db.createObjectStore('settings');
+        }
       },
     });
   }
   return dbPromise;
+}
+
+export async function getHomeAddress(): Promise<HomeAddress | null> {
+  const db = await getDB();
+  const val = await db.get('settings', 'homeAddress');
+  return (val as HomeAddress) || null;
+}
+
+export async function setHomeAddress(home: HomeAddress): Promise<void> {
+  const db = await getDB();
+  await db.put('settings', home, 'homeAddress');
+}
+
+export async function clearHomeAddress(): Promise<void> {
+  const db = await getDB();
+  await db.delete('settings', 'homeAddress');
 }
 
 export async function saveRoute(route: SavedRoute): Promise<void> {

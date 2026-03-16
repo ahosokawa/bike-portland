@@ -830,6 +830,21 @@ html, body, #app {
   flex-shrink: 0;
 }
 
+/* Generic hidden class for dynamic elements */
+.hidden {
+  display: none;
+}
+
+/* Home address display in layers panel */
+.home-address-display {
+  padding: 4px 8px 8px;
+}
+
+.home-address-text {
+  font-size: 13px;
+  color: #666;
+}
+
 /* ========== Layers menu action buttons ========== */
 .layers-action-btn {
   display: flex;

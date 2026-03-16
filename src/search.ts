@@ -24,19 +24,60 @@ export function setSearchBias(lat: number, lon: number, bbox?: string): void {
   }
 }
 
+import type { HomeAddress } from './types';
+
 export function initSearch(
   onSelectStart: (lat: number, lon: number, displayName: string) => void,
   onSelectEnd: (lat: number, lon: number, displayName: string) => void,
+  getHome?: () => HomeAddress | null,
 ): void {
   const inputStart = document.getElementById('input-start') as HTMLInputElement;
   const inputEnd = document.getElementById('input-end') as HTMLInputElement;
   const resultsDiv = document.getElementById('search-results')!;
 
+  function showHomeSuggestion(input: HTMLInputElement, onSelect: (lat: number, lon: number, displayName: string) => void): void {
+    const home = getHome?.();
+    if (!home) return;
+
+    resultsDiv.innerHTML = '';
+    resultsDiv.dataset.for = activeInput;
+
+    const item = document.createElement('div');
+    item.className = 'search-result-item';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'result-name';
+    nameSpan.textContent = 'Home';
+
+    const addrSpan = document.createElement('span');
+    addrSpan.className = 'result-address';
+    addrSpan.textContent = home.displayName;
+
+    item.appendChild(nameSpan);
+    item.appendChild(addrSpan);
+
+    item.addEventListener('click', () => {
+      input.value = home.displayName;
+      resultsDiv.classList.remove('visible');
+      onSelect(home.lat, home.lng, home.displayName);
+      input.blur();
+    });
+
+    resultsDiv.appendChild(item);
+    resultsDiv.classList.add('visible');
+  }
+
   function handleInput(input: HTMLInputElement, which: 'start' | 'end'): void {
     const onSelect = which === 'start' ? onSelectStart : onSelectEnd;
     const query = input.value.trim();
+
     if (query.length < 3) {
-      resultsDiv.classList.remove('visible');
+      // Show home suggestion if query partially matches "home"
+      if (which === 'start' && query.length > 0 && 'home'.startsWith(query.toLowerCase())) {
+        showHomeSuggestion(input, onSelect);
+      } else {
+        resultsDiv.classList.remove('visible');
+      }
       return;
     }
 
@@ -56,7 +97,10 @@ export function initSearch(
   inputStart.addEventListener('focus', () => {
     activeInput = 'start';
     inputStart.select();
-    if (resultsDiv.children.length > 0 && resultsDiv.dataset.for === 'start') {
+    // Show home suggestion when start input is focused and empty
+    if (!inputStart.value.trim()) {
+      showHomeSuggestion(inputStart, onSelectStart);
+    } else if (resultsDiv.children.length > 0 && resultsDiv.dataset.for === 'start') {
       resultsDiv.classList.add('visible');
     }
   });

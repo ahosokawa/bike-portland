@@ -153,6 +153,20 @@ export function clearMarkers(): void {
   }
 }
 
+export function clearStartMarker(): void {
+  if (startMarker) {
+    map.removeLayer(startMarker);
+    startMarker = null;
+  }
+}
+
+export function clearEndMarker(): void {
+  if (endMarker) {
+    map.removeLayer(endMarker);
+    endMarker = null;
+  }
+}
+
 /** Update user's live position on the map during navigation */
 export function updateUserPosition(
   lat: number,

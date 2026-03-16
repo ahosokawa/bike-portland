@@ -59,6 +59,12 @@ export interface EdgePreference {
   allEdgeKeys?: string[];       // all edge keys in the group (only set on custom segments)
 }
 
+export interface HomeAddress {
+  lat: number;
+  lng: number;
+  displayName: string;
+}
+
 export interface BRouterFeature {
   geometry: {
     coordinates: number[][];

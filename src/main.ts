@@ -7,6 +7,8 @@ import {
   displayRoute,
   clearRoute,
   clearMarkers,
+  clearStartMarker,
+  clearEndMarker,
   updateUserPosition,
   clearUserPosition,
   setPlanningMarkersVisible,
@@ -45,9 +47,9 @@ import {
   getWaypoints,
   getLastRoute,
 } from './custom-route-builder';
-import { saveRoute as dbSaveRoute, getAllRoutes, getRoute, deleteRoute } from './saved-routes';
+import { saveRoute as dbSaveRoute, getAllRoutes, getRoute, deleteRoute, getHomeAddress, setHomeAddress, clearHomeAddress } from './saved-routes';
 import type { NavUpdate } from './navigation';
-import type { AppState, RouteResult, SavedRoute } from './types';
+import type { AppState, RouteResult, SavedRoute, HomeAddress } from './types';
 import { turnIconSvg } from './icons';
 import { METERS_PER_MILE, FEET_PER_METER } from './geo';
 
@@ -58,6 +60,7 @@ const state: AppState = {
   route: null,
 };
 
+let homeAddress: HomeAddress | null = null;
 let routeRequestId = 0;
 let followUser = true;
 let editingPreferences = false;
@@ -120,6 +123,7 @@ function init(): void {
       state.start = latlng;
       setStartMarker(latlng);
       updateInputDisplay('start', displayName);
+      updateClearButtons();
       if (!state.end) {
         ($('input-end') as HTMLInputElement).focus();
       }
@@ -131,19 +135,42 @@ function init(): void {
       state.end = latlng;
       setEndMarker(latlng);
       updateInputDisplay('end', displayName);
+      updateClearButtons();
       if (!state.start) {
         ($('input-start') as HTMLInputElement).focus();
       }
       tryRoute();
     },
+    () => homeAddress,
   );
 
   initLayersMenu(map);
 
-  // Planning buttons
-  $('btn-my-location').addEventListener('click', handleLocate);
-  $('btn-clear').addEventListener('click', handleClear);
+  // Planning buttons — btn-my-location is dual-purpose: GPS when empty, clear when filled
+  $('btn-my-location').addEventListener('click', () => {
+    if (($('input-start') as HTMLInputElement).value.trim()) {
+      handleClearStart();
+    } else {
+      handleLocate();
+    }
+  });
+  $('btn-clear-end').addEventListener('click', handleClearEnd);
   $('btn-swap').addEventListener('click', handleSwap);
+
+  // Home address buttons
+  $('btn-set-home').addEventListener('click', handleSetHome);
+  $('btn-clear-home').addEventListener('click', handleClearHome);
+
+  // Load home address from IndexedDB and auto-populate start
+  getHomeAddress().then(home => {
+    homeAddress = home;
+    updateHomeAddressUI();
+    if (home && !state.start) {
+      state.start = L.latLng(home.lat, home.lng);
+      setStartMarker(state.start);
+      updateInputDisplay('start', home.displayName);
+    }
+  });
 
   // Navigation buttons
   $('btn-go').addEventListener('click', handleStartNav);
@@ -172,6 +199,9 @@ function init(): void {
   $('btn-pref-undo').addEventListener('click', handlePrefUndo);
   $('btn-pref-save-prefer').addEventListener('click', () => handlePrefSave('preferred'));
   $('btn-pref-save-block').addEventListener('click', () => handlePrefSave('nogo'));
+
+  // Initialize button states (end clear button hidden on load)
+  updateClearButtons();
 
   // Keep search bias in sync with map viewport
   map.on('moveend', () => {
@@ -253,6 +283,7 @@ function closeLayersMenu(): void {
 function updateInputDisplay(which: 'start' | 'end', text: string): void {
   const inputId = which === 'start' ? 'input-start' : 'input-end';
   ($(inputId) as HTMLInputElement).value = text;
+  updateClearButtons();
 }
 
 /** Show coords immediately, then resolve to a street address. */
@@ -351,6 +382,7 @@ function handleSwap(): void {
   if (state.start) setStartMarker(state.start);
   if (state.end) setEndMarker(state.end);
 
+  updateClearButtons();
   tryRoute();
 }
 
@@ -403,6 +435,81 @@ function handleClear(): void {
   const results = $('search-results');
   results.innerHTML = '';
   results.classList.remove('visible');
+  updateClearButtons();
+}
+
+function handleClearStart(): void {
+  state.start = null;
+  clearStartMarker();
+  ($('input-start') as HTMLInputElement).value = '';
+  if (state.route) {
+    state.route = null;
+    routeRequestId++;
+    clearRoute();
+    $('route-panel').classList.add('hidden');
+  }
+  updateClearButtons();
+}
+
+function handleClearEnd(): void {
+  state.end = null;
+  clearEndMarker();
+  ($('input-end') as HTMLInputElement).value = '';
+  if (state.route) {
+    state.route = null;
+    routeRequestId++;
+    clearRoute();
+    $('route-panel').classList.add('hidden');
+  }
+  updateClearButtons();
+}
+
+const GPS_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2"/></svg>';
+const CLEAR_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+
+function updateClearButtons(): void {
+  const startHasContent = !!($('input-start') as HTMLInputElement).value.trim();
+  const endHasContent = !!($('input-end') as HTMLInputElement).value.trim();
+
+  // Start row: toggle btn-my-location between GPS icon and clear icon
+  const startBtn = $('btn-my-location');
+  if (startHasContent) {
+    startBtn.innerHTML = CLEAR_ICON;
+    startBtn.title = 'Clear start';
+    startBtn.setAttribute('aria-label', 'Clear start');
+  } else {
+    startBtn.innerHTML = GPS_ICON;
+    startBtn.title = 'Use my location';
+    startBtn.setAttribute('aria-label', 'Use my location');
+  }
+
+  // End row: toggle visibility (not display) to preserve layout space
+  $('btn-clear-end').style.visibility = endHasContent ? 'visible' : 'hidden';
+}
+
+async function handleSetHome(): Promise<void> {
+  if (!state.start) {
+    showToast('Set a start location first');
+    return;
+  }
+  const displayName = ($('input-start') as HTMLInputElement).value.trim() || `${state.start.lat.toFixed(4)}, ${state.start.lng.toFixed(4)}`;
+  const home: HomeAddress = { lat: state.start.lat, lng: state.start.lng, displayName };
+  await setHomeAddress(home);
+  homeAddress = home;
+  updateHomeAddressUI();
+  showToast('Home address saved');
+}
+
+async function handleClearHome(): Promise<void> {
+  await clearHomeAddress();
+  homeAddress = null;
+  updateHomeAddressUI();
+  showToast('Home address cleared');
+}
+
+function updateHomeAddressUI(): void {
+  $('home-address-text').textContent = homeAddress ? homeAddress.displayName : 'Not set';
+  $('btn-clear-home').classList.toggle('hidden', !homeAddress);
 }
 
 function showRoutePanel(route: RouteResult): void {
