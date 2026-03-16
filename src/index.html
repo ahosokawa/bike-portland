@@ -87,6 +87,10 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v14a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
             Saved Routes
           </button>
+          <button id="btn-preferences" class="layers-action-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+            Road Preferences
+          </button>
         </div>
       </div>
       <button id="btn-layers" title="Map options" aria-label="Map options">
@@ -109,6 +113,21 @@
           <button id="btn-exit-builder" class="builder-btn" title="Cancel" aria-label="Exit builder">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preferences editing toolbar -->
+    <div id="preferences-toolbar" class="hidden">
+      <div class="builder-toolbar-inner">
+        <span id="preferences-status">Tap a bike route or map to draw</span>
+        <div class="builder-actions">
+          <button id="btn-pref-undo" class="builder-btn" title="Undo" aria-label="Undo last point">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10h10a5 5 0 015 5v0a5 5 0 01-5 5H12"/><polyline points="7 14 3 10 7 6"/></svg>
+          </button>
+          <button id="btn-pref-save-prefer" class="builder-btn builder-btn-primary" disabled>Safe</button>
+          <button id="btn-pref-save-block" class="builder-btn builder-btn-danger" disabled>Block</button>
+          <button id="btn-exit-preferences" class="builder-btn">Done</button>
         </div>
       </div>
     </div>

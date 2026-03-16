@@ -1,5 +1,7 @@
 const PHOTON_URL = 'https://photon.komoot.io/api/';
 const PHOTON_REVERSE_URL = 'https://photon.komoot.io/reverse';
+const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 // Dynamic bias — defaults to Portland, updated from map viewport
 let biasLat = 45.52;
 let biasLon = -122.68;
@@ -74,14 +76,25 @@ export function initSearch(
   });
 }
 
-// ========== Forward geocoding (Photon) ==========
+// ========== Geocoding result type ==========
 
-async function searchAddress(
-  query: string,
-  resultsDiv: HTMLElement,
-  input: HTMLInputElement,
-  onSelect: (lat: number, lon: number, displayName: string) => void,
-): Promise<void> {
+interface GeoResult {
+  lat: number;
+  lon: number;
+  name: string;
+  detail: string;
+}
+
+// ========== Forward geocoding (Photon, with Nominatim fallback) ==========
+
+/** Try Photon first; if it returns no usable results, fall back to Nominatim. */
+async function fetchGeoResults(query: string): Promise<GeoResult[]> {
+  const photonResults = await fetchPhoton(query);
+  if (photonResults.length > 0) return photonResults;
+  return fetchNominatim(query);
+}
+
+async function fetchPhoton(query: string): Promise<GeoResult[]> {
   const params = new URLSearchParams({
     q: query,
     lat: biasLat.toString(),
@@ -91,44 +104,77 @@ async function searchAddress(
     lang: 'en',
   });
 
+  const res = await fetch(`${PHOTON_URL}?${params}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  const features: any[] = data.features || [];
+  return features.map((f) => {
+    const props = f.properties || {};
+    const [lon, lat] = f.geometry.coordinates;
+    return { lat, lon, name: formatName(props), detail: formatDetail(props) };
+  });
+}
+
+async function fetchNominatim(query: string): Promise<GeoResult[]> {
+  const [minLon, minLat, maxLon, maxLat] = biasBbox.split(',');
+  const params = new URLSearchParams({
+    q: query,
+    format: 'jsonv2',
+    limit: '5',
+    viewbox: `${minLon},${maxLat},${maxLon},${minLat}`, // left,top,right,bottom
+    bounded: '1',
+    'accept-language': 'en',
+  });
+
+  const res = await fetch(`${NOMINATIM_URL}?${params}`, {
+    headers: { 'User-Agent': 'PedalPDX/1.0' },
+  });
+  if (!res.ok) return [];
+  const data: any[] = await res.json();
+  return data.map((r) => ({
+    lat: parseFloat(r.lat),
+    lon: parseFloat(r.lon),
+    name: r.name || r.display_name.split(',')[0],
+    detail: r.display_name.split(',').slice(1, 4).join(',').trim(),
+  }));
+}
+
+async function searchAddress(
+  query: string,
+  resultsDiv: HTMLElement,
+  input: HTMLInputElement,
+  onSelect: (lat: number, lon: number, displayName: string) => void,
+): Promise<void> {
   try {
-    const res = await fetch(`${PHOTON_URL}?${params}`);
-    const data = await res.json();
-    const features: any[] = data.features || [];
+    const results = await fetchGeoResults(query);
 
     resultsDiv.innerHTML = '';
     resultsDiv.dataset.for = activeInput;
 
-    if (features.length === 0) {
+    if (results.length === 0) {
       resultsDiv.classList.remove('visible');
       return;
     }
 
-    for (const f of features) {
-      const props = f.properties || {};
-      const [lon, lat] = f.geometry.coordinates;
-
-      const name = formatName(props);
-      const detail = formatDetail(props);
-
+    for (const r of results) {
       const item = document.createElement('div');
       item.className = 'search-result-item';
 
       const nameSpan = document.createElement('span');
       nameSpan.className = 'result-name';
-      nameSpan.textContent = name;
+      nameSpan.textContent = r.name;
 
       const addrSpan = document.createElement('span');
       addrSpan.className = 'result-address';
-      addrSpan.textContent = detail;
+      addrSpan.textContent = r.detail;
 
       item.appendChild(nameSpan);
       item.appendChild(addrSpan);
 
       item.addEventListener('click', () => {
-        input.value = name;
+        input.value = r.name;
         resultsDiv.classList.remove('visible');
-        onSelect(lat, lon, name);
+        onSelect(r.lat, r.lon, r.name);
         input.blur();
       });
       resultsDiv.appendChild(item);
@@ -139,27 +185,52 @@ async function searchAddress(
   }
 }
 
-// ========== Reverse geocoding (Photon) ==========
+// ========== Reverse geocoding (Photon, with Nominatim fallback) ==========
 
 export async function reverseGeocode(lat: number, lng: number): Promise<string> {
+  const fallback = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+  try {
+    const name = await reversePhoton(lat, lng);
+    if (name) return name;
+    return (await reverseNominatim(lat, lng)) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function reversePhoton(lat: number, lng: number): Promise<string | null> {
   const params = new URLSearchParams({
     lat: lat.toString(),
     lon: lng.toString(),
   });
-
-  try {
-    const res = await fetch(`${PHOTON_REVERSE_URL}?${params}`);
-    const data = await res.json();
-    const f = data.features?.[0];
-    if (!f) return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-
-    return formatName(f.properties || {});
-  } catch {
-    return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-  }
+  const res = await fetch(`${PHOTON_REVERSE_URL}?${params}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  const f = data.features?.[0];
+  if (!f) return null;
+  return formatName(f.properties || {});
 }
 
-// ========== Address formatting ==========
+async function reverseNominatim(lat: number, lng: number): Promise<string | null> {
+  const params = new URLSearchParams({
+    lat: lat.toString(),
+    lon: lng.toString(),
+    format: 'jsonv2',
+  });
+  const res = await fetch(`${NOMINATIM_REVERSE_URL}?${params}`, {
+    headers: { 'User-Agent': 'PedalPDX/1.0' },
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (data.error) return null;
+  const addr = data.address || {};
+  if (addr.house_number && addr.road) return `${addr.house_number} ${addr.road}`;
+  if (addr.road) return addr.road;
+  return data.name || data.display_name?.split(',')[0] || null;
+}
+
+// ========== Address formatting (Photon) ==========
 
 /** Is this a named place (business, park, etc.) rather than just a street address? */
 function isNamedPlace(p: any): boolean {

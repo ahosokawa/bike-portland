@@ -2,6 +2,7 @@ import type { LatLng } from 'leaflet';
 import type { RouteResult, TurnInstruction, Waypoint, BRouterFeature } from './types';
 import { haversine as hav, computeDistance, bearing } from './geo';
 import { findPbotPath } from './pbot-graph';
+import { getOverridesMap } from './edge-preferences';
 import type { PbotEdge, PbotPathResult } from './pbot-graph';
 
 const BROUTER_URL = 'https://brouter.de/brouter';
@@ -80,6 +81,17 @@ export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteRes
   return parseRouteFeature(feature);
 }
 
+/** Fetch raw road geometry between two points using BRouter (shortest profile).
+ *  Returns [lat, lng][] coordinates following real roads. */
+export async function fetchRoadGeometry(
+  startLat: number, startLng: number,
+  endLat: number, endLng: number,
+): Promise<[number, number][]> {
+  const lonlats = `${startLng},${startLat}|${endLng},${endLat}`;
+  const feature = await fetchRoute(lonlats, 'shortest');
+  return feature.geometry.coordinates.map(c => [c[1], c[0]] as [number, number]);
+}
+
 /**
  * Route using PBOT bike network A* path for the core (safest profile),
  * with BRouter for first/last mile. "balanced" profile uses pure BRouter.
@@ -90,10 +102,14 @@ export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<Ro
     return computeRoute(start, end);
   }
 
-  const pbotPath = findPbotPath(start.lat, start.lng, end.lat, end.lng);
+  const overrides = getOverridesMap();
+  const pbotPath = findPbotPath(start.lat, start.lng, end.lat, end.lng, 'safest', overrides);
   if (!pbotPath) {
     return computeRoute(start, end);
   }
+
+  // Replace straight-line gap edges with real road geometry from BRouter
+  await resolveGapEdges(pbotPath.edges);
 
   const pbotRoute = buildRouteFromPbotPath(pbotPath);
 
@@ -113,6 +129,30 @@ export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<Ro
   ]);
 
   return stitchRoutes(start, end, firstMile, pbotRoute, lastMile);
+}
+
+/** Replace straight-line gap-bridge edge coords with real road geometry. */
+async function resolveGapEdges(edges: PbotEdge[]): Promise<void> {
+  const gapIndices = edges
+    .map((e, i) => e.ct.startsWith('_GAP') || e.ct === '_PREF' ? i : -1)
+    .filter(i => i >= 0);
+
+  if (gapIndices.length === 0) return;
+
+  const results = await Promise.all(
+    gapIndices.map(i => {
+      const e = edges[i];
+      const start = e.coords[0];
+      const end = e.coords[e.coords.length - 1];
+      return fetchRoadGeometry(start[0], start[1], end[0], end[1]).catch(() => null);
+    }),
+  );
+
+  for (let j = 0; j < gapIndices.length; j++) {
+    if (results[j] && results[j]!.length >= 2) {
+      edges[gapIndices[j]].coords = results[j]!;
+    }
+  }
 }
 
 export async function computeRouteMulti(waypoints: Waypoint[], profileOverride?: string): Promise<RouteResult> {

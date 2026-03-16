@@ -49,6 +49,16 @@ export interface SavedRoute {
   updatedAt: number;
 }
 
+export interface EdgePreference {
+  edgeKey: string;              // canonical edge key (DB primary key) — for single-edge prefs
+  type: 'preferred' | 'nogo';
+  name: string;
+  coords: [number, number][][]; // array of [lat, lng][] polylines (one per sub-edge)
+  createdAt: number;
+  groupId?: string;             // links multi-edge custom segments (all edges share one groupId)
+  allEdgeKeys?: string[];       // all edge keys in the group (only set on custom segments)
+}
+
 export interface BRouterFeature {
   geometry: {
     coordinates: number[][];

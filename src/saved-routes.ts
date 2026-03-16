@@ -1,5 +1,5 @@
 import { openDB, type IDBPDatabase, type DBSchema } from 'idb';
-import type { SavedRoute } from './types';
+import type { SavedRoute, EdgePreference } from './types';
 
 interface PedalPDXDB extends DBSchema {
   savedRoutes: {
@@ -7,16 +7,25 @@ interface PedalPDXDB extends DBSchema {
     value: SavedRoute;
     indexes: { 'by-date': number };
   };
+  edgePreferences: {
+    key: string;
+    value: EdgePreference;
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<PedalPDXDB>> | null = null;
 
-function getDB(): Promise<IDBPDatabase<PedalPDXDB>> {
+export function getDB(): Promise<IDBPDatabase<PedalPDXDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<PedalPDXDB>('pedalpdx', 1, {
-      upgrade(db) {
-        const store = db.createObjectStore('savedRoutes', { keyPath: 'id' });
-        store.createIndex('by-date', 'createdAt');
+    dbPromise = openDB<PedalPDXDB>('pedalpdx', 2, {
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+          const store = db.createObjectStore('savedRoutes', { keyPath: 'id' });
+          store.createIndex('by-date', 'createdAt');
+        }
+        if (oldVersion < 2) {
+          db.createObjectStore('edgePreferences', { keyPath: 'edgeKey' });
+        }
       },
     });
   }

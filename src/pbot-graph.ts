@@ -37,6 +37,7 @@ const WEIGHTS_SAFEST: Record<string, number> = {
   '_GAP': 2.0,         // gap-bridging edges: unknown residential roads
   '_GAP_BUSY': 40.0,   // gap crossing a secondary/arterial road
   '_GAP_MAJOR': 200.0, // gap crossing a trunk/primary/motorway
+  '_PREF': 3.0,        // user-defined preference edges (override controls actual cost)
 };
 
 const PROFILE_WEIGHTS: Record<GuidanceProfile, Record<string, number>> = {
@@ -58,6 +59,7 @@ const PROFILE_MIN_COSTS: Record<GuidanceProfile, Record<string, number>> = {
 };
 
 const MIN_WEIGHT = 0.15;       // smallest multiplier across all profiles (keeps A* heuristic admissible)
+const SAFE_WEIGHT = 0.5;       // weight for user-preferred edges (= greenway/buffered lane tier)
 const MAX_SNAP_DIST = 500;     // max meters from point to nearest PBOT node
 const GAP_BRIDGE_DIST = 250;   // max meters for synthetic gap-bridging edges
 const LONG_EDGE = 500;         // meters - edges longer than this get a midpoint sample
@@ -80,8 +82,14 @@ let edgeIndex: Map<string, IndexedEdge[]> | null = null;
 
 // Node key: 4 decimal places ≈ 11 m precision — coarser to ensure segment
 // endpoints at the same intersection merge even if coords differ slightly
-function nk(lat: number, lng: number): string {
+export function nk(lat: number, lng: number): string {
   return `${lat.toFixed(4)},${lng.toFixed(4)}`;
+}
+
+/** Canonical edge key: lexicographic order of node keys, joined by `|`.
+ *  Direction-independent — both directions of a bidirectional edge share one key. */
+export function canonicalEdgeKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 // Spatial grid cell: 3 decimal places ≈ 110 m cells
@@ -191,6 +199,142 @@ export function isGraphReady(): boolean {
   return nodes !== null;
 }
 
+/** Public snap: find nearest graph node to a point. Returns null if too far. */
+export function snapToNode(lat: number, lng: number): { key: string; lat: number; lng: number } | null {
+  const key = snap(lat, lng);
+  if (!key || !nodes) return null;
+  const n = nodes.get(key)!;
+  return { key, lat: n.lat, lng: n.lng };
+}
+
+/** Ensure a node exists in the graph, creating it if needed. */
+function ensureNode(key: string, lat: number, lng: number): void {
+  if (!nodes || !grid) return;
+  if (!nodes.has(key)) {
+    nodes.set(key, { lat, lng, edges: [] });
+    const g = gk(lat, lng);
+    const a = grid.get(g);
+    if (a) a.push(key);
+    else grid.set(g, [key]);
+  }
+}
+
+/** Inject a single synthetic edge between two node keys. Creates nodes if needed. */
+export function injectEdge(
+  keyA: string, keyB: string,
+  coords: [number, number][],
+  name: string,
+): void {
+  if (!nodes || !grid) return;
+  if (keyA === keyB) return;
+
+  ensureNode(keyA, coords[0][0], coords[0][1]);
+  ensureNode(keyB, coords[coords.length - 1][0], coords[coords.length - 1][1]);
+
+  // Check if edge already exists
+  const nodeA = nodes.get(keyA)!;
+  if (nodeA.edges.some(e => e.target === keyB)) return;
+
+  let dist = 0;
+  for (let i = 1; i < coords.length; i++) {
+    dist += haversine(coords[i - 1], coords[i]);
+  }
+
+  const ct = '_PREF'; // synthetic preference edge
+  nodeA.edges.push({ target: keyB, ct, distance: dist, coords, name });
+  const nodeB = nodes.get(keyB)!;
+  nodeB.edges.push({ target: keyA, ct, distance: dist, coords: [...coords].reverse(), name });
+}
+
+/**
+ * Inject a polyline as a chain of graph edges with intermediate nodes.
+ * Creates nodes at intervals along the polyline so A* can traverse the
+ * full path. Returns the canonical edge keys for all created edges.
+ */
+export function injectPolylineEdges(
+  coords: [number, number][],
+  name: string,
+  maxSegmentLen = 200,
+): string[] {
+  if (!nodes || !grid || coords.length < 2) return [];
+
+  // Build node keys along the polyline, inserting intermediate nodes
+  // wherever the cumulative distance from the last node exceeds maxSegmentLen.
+  const nodeKeys: string[] = [];
+  const segments: [number, number][][] = []; // coords for each edge
+
+  let currentSegCoords: [number, number][] = [coords[0]];
+  let currentKey = nk(coords[0][0], coords[0][1]);
+  ensureNode(currentKey, coords[0][0], coords[0][1]);
+  nodeKeys.push(currentKey);
+
+  let accumDist = 0;
+
+  for (let i = 1; i < coords.length; i++) {
+    const d = haversine(coords[i - 1], coords[i]);
+    accumDist += d;
+    currentSegCoords.push(coords[i]);
+
+    const isLast = i === coords.length - 1;
+    if (accumDist >= maxSegmentLen || isLast) {
+      const endKey = nk(coords[i][0], coords[i][1]);
+      ensureNode(endKey, coords[i][0], coords[i][1]);
+
+      if (endKey !== currentKey) {
+        segments.push(currentSegCoords);
+        nodeKeys.push(endKey);
+        currentKey = endKey;
+      }
+
+      currentSegCoords = [coords[i]];
+      accumDist = 0;
+    }
+  }
+
+  // Create edges and collect canonical keys
+  const edgeKeys: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const kA = nodeKeys[i];
+    const kB = nodeKeys[i + 1];
+    injectEdge(kA, kB, segments[i], name);
+    edgeKeys.push(canonicalEdgeKey(kA, kB));
+  }
+
+  // Connect polyline endpoints to the nearest existing PBOT graph nodes
+  // so A* can actually reach the injected edges.
+  connectToGraph(nodeKeys[0], coords[0][0], coords[0][1]);
+  connectToGraph(nodeKeys[nodeKeys.length - 1], coords[coords.length - 1][0], coords[coords.length - 1][1]);
+
+  return edgeKeys;
+}
+
+/** Bridge an injected node to the nearest existing PBOT graph nodes. */
+function connectToGraph(injectedKey: string, lat: number, lng: number): void {
+  if (!nodes || !grid) return;
+  const bLat = Math.floor(lat * 1000);
+  const bLng = Math.floor(lng * 1000);
+  const radius = 3; // ~330m search radius
+
+  for (let dl = -radius; dl <= radius; dl++) {
+    for (let dn = -radius; dn <= radius; dn++) {
+      const keys = grid.get(`${bLat + dl},${bLng + dn}`);
+      if (!keys) continue;
+      for (const k of keys) {
+        if (k === injectedKey) continue;
+        const n = nodes.get(k)!;
+        const d = haversine([lat, lng], [n.lat, n.lng]);
+        if (d > GAP_BRIDGE_DIST) continue;
+        // Don't duplicate existing edges
+        const injected = nodes.get(injectedKey)!;
+        if (injected.edges.some(e => e.target === k)) continue;
+        const coords: [number, number][] = [[lat, lng], [n.lat, n.lng]];
+        injected.edges.push({ target: k, ct: '_GAP', distance: d, coords, name: '' });
+        n.edges.push({ target: injectedKey, ct: '_GAP', distance: d, coords: [[n.lat, n.lng], [lat, lng]], name: '' });
+      }
+    }
+  }
+}
+
 // ========== Gap-bridging edges ==========
 
 function addGapBridges(): void {
@@ -273,7 +417,7 @@ function snap(lat: number, lng: number): string | null {
 
 // Inline min-heap on [f-cost, nodeKey] tuples
 
-function astar(startKey: string, endKey: string, weights: Record<string, number>, minCosts: Record<string, number>): GraphEdge[] | null {
+function astar(startKey: string, endKey: string, weights: Record<string, number>, minCosts: Record<string, number>, edgeOverrides?: Map<string, 'preferred' | 'nogo'>): GraphEdge[] | null {
   if (!nodes) return null;
 
   const endNode = nodes.get(endKey)!;
@@ -329,6 +473,23 @@ function astar(startKey: string, endKey: string, weights: Record<string, number>
 
     for (const edge of node.edges) {
       if (closed.has(edge.target)) continue;
+
+      // Check edge overrides (preferred / nogo)
+      if (edgeOverrides) {
+        const ek = canonicalEdgeKey(cur, edge.target);
+        const override = edgeOverrides.get(ek);
+        if (override === 'nogo') continue;
+        if (override === 'preferred') {
+          const ng = g + edge.distance * SAFE_WEIGHT;
+          if (ng >= (gCost.get(edge.target) ?? Infinity)) continue;
+          gCost.set(edge.target, ng);
+          from.set(edge.target, { parent: cur, edge });
+          const t = nodes.get(edge.target)!;
+          push(ng + haversine([t.lat, t.lng], [endNode.lat, endNode.lng]) * MIN_WEIGHT, edge.target);
+          continue;
+        }
+      }
+
       const edgeCost = Math.max(edge.distance * (weights[edge.ct] ?? 3.0), minCosts[edge.ct] ?? 0);
       const ng = g + edgeCost;
       if (ng >= (gCost.get(edge.target) ?? Infinity)) continue;
@@ -383,6 +544,7 @@ export function findPbotPath(
   startLat: number, startLng: number,
   endLat: number, endLng: number,
   profile: GuidanceProfile = 'safest',
+  edgeOverrides?: Map<string, 'preferred' | 'nogo'>,
 ): PbotPathResult | null {
   if (!nodes) return null;
 
@@ -392,7 +554,7 @@ export function findPbotPath(
 
   const weights = PROFILE_WEIGHTS[profile];
   const minCosts = PROFILE_MIN_COSTS[profile];
-  const edgePath = astar(sk, ek, weights, minCosts);
+  const edgePath = astar(sk, ek, weights, minCosts, edgeOverrides);
   if (!edgePath || edgePath.length === 0) return null;
 
   const startNode = nodes.get(sk)!;
@@ -468,11 +630,34 @@ const CLASSIFY_SNAP = 50; // meters — max distance to match a route point to P
  * For each coordinate on a computed route, classify what type of bike
  * infrastructure it's on by matching against the nearest PBOT edge segment.
  * Returns a parallel array of InfraTier values (one per coordinate).
+ *
+ * If preferredCoords/nogoCoords are provided, route points near those
+ * polylines are classified as 'good' (green) or 'avoid' (red) respectively,
+ * overriding the PBOT data. Nogo takes priority over preferred.
  */
-export function classifyRoute(coords: [number, number][]): InfraTier[] {
+export function classifyRoute(
+  coords: [number, number][],
+  overrides?: { preferred?: [number, number][][]; nogo?: [number, number][][] },
+): InfraTier[] {
   if (!edgeIndex) return coords.map(() => 'none');
+  const preferredCoords = overrides?.preferred;
+  const nogoCoords = overrides?.nogo;
 
   return coords.map(([lat, lng]) => {
+    // Nogo edges take highest priority — show red
+    if (nogoCoords) {
+      for (const poly of nogoCoords) {
+        if (pointToEdgeDist([lat, lng], poly) < CLASSIFY_SNAP) return 'avoid';
+      }
+    }
+
+    // Check preferred edges — show green
+    if (preferredCoords) {
+      for (const poly of preferredCoords) {
+        if (pointToEdgeDist([lat, lng], poly) < CLASSIFY_SNAP) return 'good';
+      }
+    }
+
     const bLat = Math.floor(lat * 1000);
     const bLng = Math.floor(lng * 1000);
 

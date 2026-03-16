@@ -944,6 +944,21 @@ html, body, #app {
   border-color: #2d8a4e;
 }
 
+.builder-btn-danger {
+  background: #e74c3c;
+  color: white;
+  border-color: #e74c3c;
+}
+
+.builder-btn-danger:active {
+  background: #c0392b;
+}
+
+.builder-btn-danger:disabled {
+  background: #e74c3c;
+  border-color: #e74c3c;
+}
+
 /* ========== Waypoint markers ========== */
 .waypoint-marker {
   width: 28px;
@@ -1095,9 +1110,69 @@ html, body, #app {
   to   { opacity: 0; }
 }
 
+/* ========== Preferences toolbar ========== */
+#preferences-toolbar {
+  position: absolute;
+  bottom: 24px;
+  left: 12px;
+  right: 12px;
+  z-index: 1000;
+  padding-bottom: max(0px, env(safe-area-inset-bottom));
+}
+
+#preferences-toolbar.hidden {
+  display: none;
+}
+
+/* ========== Preference popup action buttons ========== */
+.pref-popup-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.pref-popup-btn {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1.5px solid #ddd;
+  border-radius: 6px;
+  background: white;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.1s;
+}
+
+.pref-popup-btn:active {
+  background: #f0f0f0;
+}
+
+.pref-popup-btn-prefer {
+  color: #00c853;
+  border-color: #00c853;
+}
+
+.pref-popup-btn-block {
+  color: #e74c3c;
+  border-color: #e74c3c;
+}
+
+.pref-popup-btn-clear,
+.pref-popup-btn-cancel {
+  color: #888;
+}
+
 /* ========== Builder mode: hide planning UI ========== */
 body.custom-building #route-planner,
 body.custom-building #layers-menu-wrapper {
+  display: none !important;
+}
+
+/* ========== Preferences editing mode: hide planning UI ========== */
+body.editing-preferences #route-planner,
+body.editing-preferences #layers-menu-wrapper,
+body.editing-preferences #route-panel {
   display: none !important;
 }
 

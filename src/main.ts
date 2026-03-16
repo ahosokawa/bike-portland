@@ -17,7 +17,23 @@ import type { RouteProfileKey } from './router';
 import { initSearch, reverseGeocode, setSearchBias } from './search';
 import { getCurrentPosition } from './geolocation';
 import { drawElevationProfile } from './elevation';
-import { loadPbotData, togglePbotLayer } from './pbot-layer';
+import { loadPbotData, togglePbotLayer, getPbotLayer, showPbotLayer, hidePbotLayer, isPbotLayerVisible } from './pbot-layer';
+import { nk, canonicalEdgeKey, injectPolylineEdges } from './pbot-graph';
+import {
+  loadPreferences,
+  initPreferencesLayer,
+  showPreferencesLayer,
+  hidePreferencesLayer,
+  onPreferenceRemoved,
+  injectPreferenceEdges,
+  setPreference,
+  setPreferenceGroup,
+  removePreference,
+  getPreferences,
+  getUniquePreferences,
+} from './edge-preferences';
+import { fetchRoadGeometry } from './router';
+import type { EdgePreference } from './types';
 import { startNavigation, stopNavigation, isNavigating } from './navigation';
 import {
   enterBuilderMode,
@@ -44,6 +60,18 @@ const state: AppState = {
 
 let routeRequestId = 0;
 let followUser = true;
+let editingPreferences = false;
+let pbotWasVisibleBeforePrefs = false;
+let pbotClickHandler: ((e: L.LeafletEvent) => void) | null = null;
+let prefMapClickHandler: ((e: L.LeafletMouseEvent) => void) | null = null;
+let prefPbotFlagHandler: ((e: L.LeafletEvent) => void) | null = null;
+
+// Multi-waypoint custom segment drawing state
+let prefWaypoints: { lat: number; lng: number }[] = [];
+let prefWaypointMarkers: L.CircleMarker[] = [];
+let prefRouteLine: L.Polyline | null = null;
+let prefRouteCoords: [number, number][] = []; // accumulated BRouter coords
+let prefComputeId = 0;
 
 function $(id: string): HTMLElement {
   return document.getElementById(id)!;
@@ -52,11 +80,18 @@ function $(id: string): HTMLElement {
 function init(): void {
   const map = initMap();
 
-  // Load PBOT data
-  loadPbotData(map);
+  // Load PBOT data and preferences in parallel, then inject preference edges
+  Promise.all([loadPbotData(map), loadPreferences()]).then(() => {
+    injectPreferenceEdges();
+    initPreferencesLayer(map);
+    onPreferenceRemoved(() => {
+      updatePreferencesStatus();
+    });
+  });
 
   map.on('click', (e: L.LeafletMouseEvent) => {
     if (isNavigating()) return;
+    if (editingPreferences) return; // clicks handled by PBOT layer
     if (isBuilding()) {
       addWaypoint(e.latlng);
       return;
@@ -130,6 +165,13 @@ function init(): void {
   // Saved routes buttons
   $('btn-saved-routes').addEventListener('click', handleShowSavedRoutes);
   $('btn-close-saved').addEventListener('click', () => $('saved-routes-panel').classList.add('hidden'));
+
+  // Preferences buttons
+  $('btn-preferences').addEventListener('click', () => handleEnterPreferences(map));
+  $('btn-exit-preferences').addEventListener('click', handleExitPreferences);
+  $('btn-pref-undo').addEventListener('click', handlePrefUndo);
+  $('btn-pref-save-prefer').addEventListener('click', () => handlePrefSave('preferred'));
+  $('btn-pref-save-block').addEventListener('click', () => handlePrefSave('nogo'));
 
   // Keep search bias in sync with map viewport
   map.on('moveend', () => {
@@ -312,6 +354,17 @@ function handleSwap(): void {
   tryRoute();
 }
 
+/** Collect preference polylines for route classification coloring. */
+function getPreferenceCoords(): { preferred?: [number, number][][]; nogo?: [number, number][][] } {
+  const all = getUniquePreferences();
+  const preferred = all.filter(p => p.type === 'preferred').flatMap(p => p.coords);
+  const nogo = all.filter(p => p.type === 'nogo').flatMap(p => p.coords);
+  return {
+    preferred: preferred.length > 0 ? preferred : undefined,
+    nogo: nogo.length > 0 ? nogo : undefined,
+  };
+}
+
 async function handleRoute(): Promise<void> {
   if (!state.start || !state.end) return;
 
@@ -323,7 +376,7 @@ async function handleRoute(): Promise<void> {
     if (requestId !== routeRequestId) return;
     state.route = route;
     detectBacktracking(route.coordinates);
-    displayRoute(route.coordinates, classifyRoute(route.coordinates));
+    displayRoute(route.coordinates, classifyRoute(route.coordinates, getPreferenceCoords()));
     showRoutePanel(route);
   } catch (err) {
     if (requestId !== routeRequestId) return;
@@ -486,10 +539,360 @@ async function handleSaveRoute(): Promise<void> {
   state.end = L.latLng(last.lat, last.lng);
   setStartMarker(state.start);
   setEndMarker(state.end);
-  displayRoute(route.coordinates, classifyRoute(route.coordinates));
+  displayRoute(route.coordinates, classifyRoute(route.coordinates, getPreferenceCoords()));
   showRoutePanel(route);
   resolveAndDisplay('start', first.lat, first.lng);
   resolveAndDisplay('end', last.lat, last.lng);
+}
+
+// ========== Road preferences mode ==========
+
+function handleEnterPreferences(map: L.Map): void {
+  closeLayersMenu();
+  editingPreferences = true;
+  document.body.classList.add('editing-preferences');
+  $('preferences-toolbar').classList.remove('hidden');
+  clearRoute();
+  clearMarkers();
+  $('route-panel').classList.add('hidden');
+  pbotWasVisibleBeforePrefs = isPbotLayerVisible();
+  showPbotLayer(map);
+  showPreferencesLayer();
+  clearPrefDrawing(map);
+  updatePreferencesStatus();
+
+  // PBOT layer click handler — for segments that have PBOT data
+  const layer = getPbotLayer();
+  if (layer) {
+    pbotClickHandler = (e: L.LeafletEvent) => {
+      const le = e as L.LeafletMouseEvent;
+      const featureLayer = (le as any).layer;
+      const feature = featureLayer?.feature;
+      if (!feature) return;
+
+      // If currently drawing a custom segment, ignore PBOT clicks
+      if (prefWaypoints.length > 0) return;
+
+      const geom = feature.geometry;
+      const name = feature.properties?.StreetName || 'Unnamed';
+
+      const edgeKeys: string[] = [];
+      const edgeCoords: [number, number][][] = [];
+
+      const lines: number[][][] =
+        geom.type === 'MultiLineString' ? geom.coordinates :
+        geom.type === 'LineString' ? [geom.coordinates] : [];
+
+      for (const line of lines) {
+        if (line.length < 2) continue;
+        const a = line[0]; // [lng, lat]
+        const b = line[line.length - 1];
+        const nkA = nk(a[1], a[0]);
+        const nkB = nk(b[1], b[0]);
+        if (nkA === nkB) continue;
+        edgeKeys.push(canonicalEdgeKey(nkA, nkB));
+        edgeCoords.push(line.map(c => [c[1], c[0]] as [number, number]));
+      }
+
+      if (edgeKeys.length === 0) return;
+
+      showPbotPreferencePopup(map, le.latlng, edgeKeys, edgeCoords, name);
+    };
+    layer.on('click', pbotClickHandler);
+  }
+
+  // Map click handler — multi-waypoint drawing for custom segments
+  prefMapClickHandler = (e: L.LeafletMouseEvent) => {
+    if ((e as any).originalEvent._pbotHandled) return;
+    addPrefWaypoint(map, e.latlng);
+  };
+  map.on('click', prefMapClickHandler);
+
+  // Mark PBOT layer clicks so the map handler ignores them
+  if (layer) {
+    prefPbotFlagHandler = (e: L.LeafletEvent) => {
+      ((e as L.LeafletMouseEvent).originalEvent as any)._pbotHandled = true;
+    };
+    layer.on('click', prefPbotFlagHandler);
+  }
+}
+
+// ---- Multi-waypoint custom segment drawing ----
+
+function addPrefWaypoint(map: L.Map, latlng: L.LatLng): void {
+  const wp = { lat: latlng.lat, lng: latlng.lng };
+  prefWaypoints.push(wp);
+
+  const marker = L.circleMarker(latlng, {
+    radius: 7, color: '#2d8a4e', fillColor: '#2d8a4e', fillOpacity: 0.9, weight: 2,
+  }).addTo(map);
+  prefWaypointMarkers.push(marker);
+
+  if (prefWaypoints.length === 1) {
+    $('preferences-status').textContent = 'Tap to extend the route';
+    updatePrefButtons();
+    return;
+  }
+
+  // Fetch BRouter segment between the last two waypoints
+  const prev = prefWaypoints[prefWaypoints.length - 2];
+  const cur = wp;
+  const reqId = ++prefComputeId;
+
+  $('preferences-status').textContent = 'Routing...';
+
+  fetchRoadGeometry(prev.lat, prev.lng, cur.lat, cur.lng)
+    .then(segCoords => {
+      if (reqId !== prefComputeId) return;
+      if (segCoords.length < 2) {
+        showToast('Could not find road between points');
+        return;
+      }
+
+      // Append segment coords (skip first point to avoid duplicate at junction)
+      const startIdx = prefRouteCoords.length === 0 ? 0 : 1;
+      for (let i = startIdx; i < segCoords.length; i++) {
+        prefRouteCoords.push(segCoords[i]);
+      }
+
+      // Update the route line on the map
+      if (prefRouteLine) map.removeLayer(prefRouteLine);
+      prefRouteLine = L.polyline(
+        prefRouteCoords.map(c => L.latLng(c[0], c[1])),
+        { color: '#2196f3', weight: 6, opacity: 0.8 },
+      ).addTo(map);
+
+      updatePrefButtons();
+      const miles = (computePrefDistance() / 1609.34).toFixed(1);
+      $('preferences-status').textContent = `${prefWaypoints.length} points \u00B7 ${miles} mi`;
+    })
+    .catch(() => {
+      if (reqId !== prefComputeId) return;
+      showToast('Could not fetch road geometry');
+      // Remove the failed waypoint
+      prefWaypoints.pop();
+      const m = prefWaypointMarkers.pop();
+      if (m) map.removeLayer(m);
+      updatePrefButtons();
+    });
+}
+
+function computePrefDistance(): number {
+  let d = 0;
+  for (let i = 1; i < prefRouteCoords.length; i++) {
+    const [lat1, lng1] = prefRouteCoords[i - 1];
+    const [lat2, lng2] = prefRouteCoords[i];
+    const dlat = (lat2 - lat1) * 111320;
+    const dlng = (lng2 - lng1) * 111320 * Math.cos(lat1 * Math.PI / 180);
+    d += Math.sqrt(dlat * dlat + dlng * dlng);
+  }
+  return d;
+}
+
+function handlePrefUndo(): void {
+  const map = getMap();
+  if (prefWaypoints.length === 0) return;
+
+  prefWaypoints.pop();
+  const m = prefWaypointMarkers.pop();
+  if (m) map.removeLayer(m);
+
+  if (prefWaypoints.length < 2) {
+    // Not enough points for a route — clear everything
+    prefRouteCoords = [];
+    if (prefRouteLine) { map.removeLayer(prefRouteLine); prefRouteLine = null; }
+    prefComputeId++; // cancel any in-flight requests
+    updatePrefButtons();
+    if (prefWaypoints.length === 1) {
+      $('preferences-status').textContent = 'Tap to extend the route';
+    } else {
+      updatePreferencesStatus();
+    }
+    return;
+  }
+
+  // Recompute the full route from remaining waypoints
+  prefRouteCoords = [];
+  if (prefRouteLine) { map.removeLayer(prefRouteLine); prefRouteLine = null; }
+  const reqId = ++prefComputeId;
+
+  $('preferences-status').textContent = 'Recalculating...';
+
+  // Chain BRouter calls for each consecutive pair
+  let chain = Promise.resolve();
+  for (let i = 1; i < prefWaypoints.length; i++) {
+    const prev = prefWaypoints[i - 1];
+    const cur = prefWaypoints[i];
+    chain = chain.then(() =>
+      fetchRoadGeometry(prev.lat, prev.lng, cur.lat, cur.lng).then(segCoords => {
+        if (reqId !== prefComputeId) return;
+        if (segCoords.length < 2) return;
+        const startIdx = prefRouteCoords.length === 0 ? 0 : 1;
+        for (let j = startIdx; j < segCoords.length; j++) {
+          prefRouteCoords.push(segCoords[j]);
+        }
+      })
+    );
+  }
+
+  chain.then(() => {
+    if (reqId !== prefComputeId) return;
+    if (prefRouteCoords.length >= 2) {
+      prefRouteLine = L.polyline(
+        prefRouteCoords.map(c => L.latLng(c[0], c[1])),
+        { color: '#2196f3', weight: 6, opacity: 0.8 },
+      ).addTo(map);
+    }
+    updatePrefButtons();
+    const miles = (computePrefDistance() / 1609.34).toFixed(1);
+    $('preferences-status').textContent = `${prefWaypoints.length} points \u00B7 ${miles} mi`;
+  });
+}
+
+async function handlePrefSave(type: 'preferred' | 'nogo'): Promise<void> {
+  if (prefRouteCoords.length < 2) return;
+
+  const map = getMap();
+  const coords = prefRouteCoords.slice();
+
+  // Inject into graph and get edge keys
+  const allEdgeKeys = injectPolylineEdges(coords, 'Custom segment');
+  if (allEdgeKeys.length === 0) {
+    showToast('Could not create segment');
+    return;
+  }
+
+  const groupId = crypto.randomUUID();
+  const prefs: EdgePreference[] = allEdgeKeys.map(ek => ({
+    edgeKey: ek,
+    type,
+    name: 'Custom segment',
+    coords: [coords],
+    createdAt: Date.now(),
+    groupId,
+    allEdgeKeys,
+  }));
+
+  await setPreferenceGroup(prefs);
+
+  // Clear the drawing state but stay in preferences mode
+  clearPrefDrawing(map);
+  updatePreferencesStatus();
+  showToast(type === 'preferred' ? 'Safe route saved' : 'Blocked route saved');
+}
+
+function updatePrefButtons(): void {
+  const hasRoute = prefRouteCoords.length >= 2;
+  ($('btn-pref-save-prefer') as HTMLButtonElement).disabled = !hasRoute;
+  ($('btn-pref-save-block') as HTMLButtonElement).disabled = !hasRoute;
+}
+
+function clearPrefDrawing(map: L.Map): void {
+  for (const m of prefWaypointMarkers) map.removeLayer(m);
+  prefWaypointMarkers = [];
+  prefWaypoints = [];
+  prefRouteCoords = [];
+  prefComputeId++;
+  if (prefRouteLine) { map.removeLayer(prefRouteLine); prefRouteLine = null; }
+  updatePrefButtons();
+}
+
+// ---- PBOT feature popup (single-tap on existing bike route) ----
+
+function showPbotPreferencePopup(
+  map: L.Map,
+  latlng: L.LatLng,
+  edgeKeys: string[],
+  edgeCoords: [number, number][][],
+  name: string,
+): void {
+  const existing = getPreferences().get(edgeKeys[0]);
+  const existingLabel = existing ? (existing.type === 'preferred' ? ' (Safe)' : ' (Blocked)') : '';
+
+  const popup = L.popup()
+    .setLatLng(latlng)
+    .setContent(
+      `<strong>${name}</strong>${existingLabel}` +
+      `<div class="pref-popup-actions">` +
+      `<button class="pref-popup-btn pref-popup-btn-prefer" data-action="prefer">Safe</button>` +
+      `<button class="pref-popup-btn pref-popup-btn-block" data-action="block">Block</button>` +
+      `<button class="pref-popup-btn pref-popup-btn-clear" data-action="clear">Clear</button>` +
+      `</div>`
+    )
+    .openOn(map);
+
+  const container = popup.getElement();
+  if (container) {
+    container.addEventListener('click', async (ev) => {
+      const btn = (ev.target as HTMLElement).closest('.pref-popup-btn') as HTMLElement | null;
+      if (!btn) return;
+      const action = btn.dataset.action;
+
+      if (action === 'prefer' || action === 'block') {
+        for (let i = 0; i < edgeKeys.length; i++) {
+          const pref: EdgePreference = {
+            edgeKey: edgeKeys[i],
+            type: action === 'prefer' ? 'preferred' : 'nogo',
+            name,
+            coords: [edgeCoords[i]],
+            createdAt: Date.now(),
+          };
+          await setPreference(pref);
+        }
+      } else if (action === 'clear') {
+        for (const ek of edgeKeys) {
+          await removePreference(ek);
+        }
+      }
+
+      map.closePopup();
+      updatePreferencesStatus();
+    });
+  }
+}
+
+// ---- Mode exit ----
+
+function handleExitPreferences(): void {
+  const map = getMap();
+  editingPreferences = false;
+  document.body.classList.remove('editing-preferences');
+  $('preferences-toolbar').classList.add('hidden');
+
+  clearPrefDrawing(map);
+  hidePreferencesLayer();
+
+  // Restore PBOT layer to its previous visibility state
+  if (!pbotWasVisibleBeforePrefs) {
+    hidePbotLayer(map);
+  }
+
+  const layer = getPbotLayer();
+  if (layer) {
+    if (pbotClickHandler) {
+      layer.off('click', pbotClickHandler);
+      pbotClickHandler = null;
+    }
+    if (prefPbotFlagHandler) {
+      layer.off('click', prefPbotFlagHandler);
+      prefPbotFlagHandler = null;
+    }
+  }
+
+  if (prefMapClickHandler) {
+    map.off('click', prefMapClickHandler);
+    prefMapClickHandler = null;
+  }
+
+  if (state.start && state.end) tryRoute();
+}
+
+function updatePreferencesStatus(): void {
+  const count = getUniquePreferences().length;
+  const status = count === 0
+    ? 'Tap a bike route or map to draw'
+    : `${count} preference${count !== 1 ? 's' : ''} set \u00B7 tap to draw more`;
+  $('preferences-status').textContent = status;
 }
 
 // ========== Saved routes ==========
@@ -577,7 +980,7 @@ async function handleLoadSavedRoute(id: string): Promise<void> {
 
   setStartMarker(state.start);
   setEndMarker(state.end);
-  displayRoute(route.coordinates, classifyRoute(route.coordinates));
+  displayRoute(route.coordinates, classifyRoute(route.coordinates, getPreferenceCoords()));
   showRoutePanel(route);
 
   resolveAndDisplay('start', first.lat, first.lng);
@@ -614,7 +1017,7 @@ function handleStopNav(): void {
   setPlanningMarkersVisible(true);
 
   if (state.route) {
-    displayRoute(state.route.coordinates, classifyRoute(state.route.coordinates));
+    displayRoute(state.route.coordinates, classifyRoute(state.route.coordinates, getPreferenceCoords()));
   }
 }
 

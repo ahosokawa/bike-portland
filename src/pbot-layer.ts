@@ -101,3 +101,25 @@ export function togglePbotLayer(map: L.Map): boolean {
   }
   return visible;
 }
+
+export function getPbotLayer(): L.GeoJSON | null {
+  return pbotLayer;
+}
+
+export function showPbotLayer(map: L.Map): void {
+  if (pbotLayer && !visible) {
+    pbotLayer.addTo(map);
+    visible = true;
+  }
+}
+
+export function hidePbotLayer(map: L.Map): void {
+  if (pbotLayer && visible) {
+    map.removeLayer(pbotLayer);
+    visible = false;
+  }
+}
+
+export function isPbotLayerVisible(): boolean {
+  return visible;
+}
