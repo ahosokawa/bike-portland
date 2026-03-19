@@ -225,19 +225,30 @@ function init(): void {
 function initLayersMenu(map: L.Map): void {
   const layersBtn = $('btn-layers');
   const layersPanel = $('layers-panel');
+  const backdrop = $('layers-backdrop');
 
   layersBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     const isOpen = layersPanel.classList.toggle('visible');
+    backdrop.classList.toggle('visible', isOpen);
     layersBtn.classList.toggle('active', isOpen);
   });
 
-  document.addEventListener('click', (e) => {
-    if (!(e.target as Element).closest('#layers-menu-wrapper')) {
-      layersPanel.classList.remove('visible');
-      layersBtn.classList.remove('active');
-    }
+  backdrop.addEventListener('click', () => {
+    closeLayersMenu();
   });
+
+  // Legend collapse toggle
+  const legendToggle = layersPanel.querySelector('.legend-toggle');
+  if (legendToggle) {
+    legendToggle.addEventListener('click', () => {
+      const legend = layersPanel.querySelector('.legend-collapsible');
+      if (legend) {
+        legend.classList.toggle('collapsed');
+        legendToggle.classList.toggle('expanded');
+      }
+    });
+  }
 
   // Profile options
   const profileContainer = $('profile-options');
@@ -275,6 +286,7 @@ function initLayersMenu(map: L.Map): void {
 
 function closeLayersMenu(): void {
   $('layers-panel').classList.remove('visible');
+  $('layers-backdrop').classList.remove('visible');
   $('btn-layers').classList.remove('active');
 }
 
@@ -533,13 +545,20 @@ function showRoutePanel(route: RouteResult): void {
       <span class="stat-value">${minutes} min</span>
       <span class="stat-label">Est. Time</span>
     </div>
-    <div class="stat">
+    ${route.hasElevation ? `<div class="stat">
       <span class="stat-value">${ascendFt} ft</span>
       <span class="stat-label">Climbing</span>
-    </div>
+    </div>` : ''}
   `;
 
-  drawElevationProfile(route.elevations, $('elevation-profile'));
+  const elevationEl = $('elevation-profile');
+  if (route.hasElevation) {
+    elevationEl.classList.remove('hidden');
+    drawElevationProfile(route.elevations, elevationEl);
+  } else {
+    elevationEl.classList.add('hidden');
+    elevationEl.innerHTML = '';
+  }
 
   const directionsHtml = route.instructions
     .map(

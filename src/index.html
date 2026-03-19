@@ -53,9 +53,18 @@
     <!-- Map -->
     <div id="map"></div>
 
-    <!-- Layers menu (hidden during navigation) -->
-    <div id="layers-menu-wrapper">
-      <div id="layers-panel">
+    <!-- Layers button -->
+    <button id="btn-layers" title="Map options" aria-label="Map options">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+    </button>
+
+    <!-- Bottom sheet backdrop -->
+    <div id="layers-backdrop"></div>
+
+    <!-- Bottom sheet panel -->
+    <div id="layers-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-content">
         <div class="layers-section">
           <div class="layers-section-title">Route Style</div>
           <div id="profile-options"></div>
@@ -68,8 +77,11 @@
           </div>
         </div>
         <div class="layers-section">
-          <div class="layers-section-title">Legend</div>
-          <div class="legend">
+          <div class="layers-section-title legend-toggle">
+            Legend
+            <svg class="legend-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <div class="legend legend-collapsible collapsed">
             <div class="legend-item"><span class="legend-line" style="background:#00c853"></span>Multi-Use Path</div>
             <div class="legend-item"><span class="legend-line" style="background:#2ecc71"></span>Greenway / Buffered Lane</div>
             <div class="legend-item"><span class="legend-line" style="background:#2196f3"></span>Bike Lane / Low Traffic</div>
@@ -107,9 +119,6 @@
           </button>
         </div>
       </div>
-      <button id="btn-layers" title="Map options" aria-label="Map options">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-      </button>
     </div>
 
     <!-- Custom route builder toolbar -->

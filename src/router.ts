@@ -70,7 +70,7 @@ function parseRouteFeature(feature: BRouterFeature): RouteResult {
 
   const instructions = parseInstructions(feature);
 
-  return { coordinates: coords, distance, time, elevations, ascend, descend, instructions };
+  return { coordinates: coords, distance, time, elevations, ascend, descend, hasElevation: true, instructions };
 }
 
 // ========== Public API ==========
@@ -179,7 +179,7 @@ function buildRouteFromPbotPath(path: PbotPathResult): RouteResult {
   const elevations = coordinates.map(() => 0); // PBOT data has no elevation
   const instructions = generatePbotInstructions(path.edges, coordinates, distance);
 
-  return { coordinates, distance, time, elevations, ascend: 0, descend: 0, instructions };
+  return { coordinates, distance, time, elevations, ascend: 0, descend: 0, hasElevation: false, instructions };
 }
 
 function generatePbotInstructions(edges: PbotEdge[], coordinates: [number, number][], totalDistance: number): TurnInstruction[] {
@@ -343,7 +343,7 @@ function stitchRoutes(
   }
 
   const time = Math.round(distance / 4.2);
-  return { coordinates, distance, time, elevations, ascend, descend, instructions };
+  return { coordinates, distance, time, elevations, ascend, descend, hasElevation: false, instructions };
 }
 
 // ========== Instructions parsing (BRouter) ==========

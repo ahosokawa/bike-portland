@@ -462,7 +462,11 @@ function astar(startKey: string, endKey: string, weights: Record<string, number>
   gCost.set(startKey, 0);
   push(haversine([sn.lat, sn.lng], [endNode.lat, endNode.lng]) * MIN_WEIGHT, startKey);
 
+  const MAX_ITERATIONS = 50_000;
+  let iterations = 0;
+
   while (heap.length > 0) {
+    if (++iterations > MAX_ITERATIONS) return null;
     const cur = pop();
     if (cur === endKey) break;
     if (closed.has(cur)) continue;
@@ -547,6 +551,9 @@ export function findPbotPath(
   edgeOverrides?: Map<string, 'preferred' | 'nogo'>,
 ): PbotPathResult | null {
   if (!nodes) return null;
+
+  // Skip A* for very long routes — BRouter handles these better
+  if (haversine([startLat, startLng], [endLat, endLng]) > 20_000) return null;
 
   const sk = snap(startLat, startLng);
   const ek = snap(endLat, endLng);

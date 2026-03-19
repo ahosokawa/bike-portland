@@ -9,6 +9,7 @@ let biasBbox = '-123.0,45.3,-122.4,45.7'; // minLon,minLat,maxLon,maxLat
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let activeInput: 'start' | 'end' = 'end';
+let searchRequestId = 0;
 
 /** Update the search bias from the current map viewport. */
 export function setSearchBias(lat: number, lon: number, bbox?: string): void {
@@ -131,22 +132,33 @@ interface GeoResult {
 
 // ========== Forward geocoding (Photon, with Nominatim fallback) ==========
 
-/** Try Photon first; if it returns no usable results, fall back to Nominatim. */
+/** Try Photon with bbox first, then Photon without bbox, then Nominatim unbounded. */
 async function fetchGeoResults(query: string): Promise<GeoResult[]> {
-  const photonResults = await fetchPhoton(query);
-  if (photonResults.length > 0) return photonResults;
-  return fetchNominatim(query);
+  // Phase 1: Photon constrained to viewport bbox (fast, local results)
+  const local = await fetchPhoton(query, true);
+  if (local.length > 0) return local;
+
+  // Phase 2: Photon with proximity bias only (can find results anywhere)
+  const wide = await fetchPhoton(query, false);
+  if (wide.length > 0) return wide;
+
+  // Phase 3: Nominatim unbounded (final fallback)
+  return fetchNominatim(query, false);
 }
 
-async function fetchPhoton(query: string): Promise<GeoResult[]> {
+async function fetchPhoton(query: string, useBbox = true): Promise<GeoResult[]> {
   const params = new URLSearchParams({
     q: query,
     lat: biasLat.toString(),
     lon: biasLon.toString(),
-    bbox: biasBbox,
     limit: '5',
     lang: 'en',
   });
+  if (useBbox) {
+    params.set('bbox', biasBbox);
+  } else {
+    params.set('zoom', '10'); // wider proximity bias radius
+  }
 
   const res = await fetch(`${PHOTON_URL}?${params}`);
   if (!res.ok) return [];
@@ -159,14 +171,14 @@ async function fetchPhoton(query: string): Promise<GeoResult[]> {
   });
 }
 
-async function fetchNominatim(query: string): Promise<GeoResult[]> {
+async function fetchNominatim(query: string, bounded = true): Promise<GeoResult[]> {
   const [minLon, minLat, maxLon, maxLat] = biasBbox.split(',');
   const params = new URLSearchParams({
     q: query,
     format: 'jsonv2',
     limit: '5',
     viewbox: `${minLon},${maxLat},${maxLon},${minLat}`, // left,top,right,bottom
-    bounded: '1',
+    bounded: bounded ? '1' : '0',
     'accept-language': 'en',
   });
 
@@ -189,8 +201,10 @@ async function searchAddress(
   input: HTMLInputElement,
   onSelect: (lat: number, lon: number, displayName: string) => void,
 ): Promise<void> {
+  const myRequestId = ++searchRequestId;
   try {
     const results = await fetchGeoResults(query);
+    if (myRequestId !== searchRequestId) return; // superseded by newer search
 
     resultsDiv.innerHTML = '';
     resultsDiv.dataset.for = activeInput;

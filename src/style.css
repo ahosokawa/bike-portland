@@ -627,15 +627,12 @@ html, body, #app {
   background: #d63031;
 }
 
-/* ========== Layers menu ========== */
-#layers-menu-wrapper {
+/* ========== Layers button ========== */
+#btn-layers {
   position: absolute;
   bottom: 24px;
   right: 12px;
   z-index: 1010;
-}
-
-#btn-layers {
   width: 44px;
   height: 44px;
   border: none;
@@ -660,24 +657,73 @@ html, body, #app {
   transform: scale(0.95);
 }
 
-#layers-panel {
-  display: none;
-  position: absolute;
-  bottom: 54px;
+/* ========== Bottom sheet backdrop ========== */
+#layers-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
   right: 0;
-  width: 220px;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 1050;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#layers-backdrop.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ========== Bottom sheet panel ========== */
+#layers-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1051;
   background: white;
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
+  max-height: 55vh;
+  transform: translateY(100%);
+  transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
 }
 
 #layers-panel.visible {
-  display: block;
+  transform: translateY(0);
+}
+
+.sheet-handle {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0 4px;
+  flex-shrink: 0;
+}
+
+.sheet-handle::after {
+  content: '';
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: #d0d0d0;
+}
+
+.sheet-content {
+  overflow-y: auto;
+  flex: 1;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .layers-section {
-  padding: 12px 14px;
+  padding: 12px 16px;
 }
 
 .layers-section + .layers-section {
@@ -828,6 +874,36 @@ html, body, #app {
   height: 4px;
   border-radius: 2px;
   flex-shrink: 0;
+}
+
+/* Collapsible legend */
+.legend-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.legend-chevron {
+  transition: transform 0.25s ease;
+  color: #999;
+}
+
+.legend-toggle.expanded .legend-chevron {
+  transform: rotate(180deg);
+}
+
+.legend-collapsible {
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+  max-height: 200px;
+  opacity: 1;
+  overflow: hidden;
+}
+
+.legend-collapsible.collapsed {
+  max-height: 0;
+  opacity: 0;
 }
 
 /* Generic hidden class for dynamic elements */
@@ -1180,13 +1256,17 @@ html, body, #app {
 
 /* ========== Builder mode: hide planning UI ========== */
 body.custom-building #route-planner,
-body.custom-building #layers-menu-wrapper {
+body.custom-building #btn-layers,
+body.custom-building #layers-panel,
+body.custom-building #layers-backdrop {
   display: none !important;
 }
 
 /* ========== Preferences editing mode: hide planning UI ========== */
 body.editing-preferences #route-planner,
-body.editing-preferences #layers-menu-wrapper,
+body.editing-preferences #btn-layers,
+body.editing-preferences #layers-panel,
+body.editing-preferences #layers-backdrop,
 body.editing-preferences #route-panel {
   display: none !important;
 }
@@ -1194,7 +1274,9 @@ body.editing-preferences #route-panel {
 /* ========== Navigation mode: hide planning UI ========== */
 body.navigating #route-planner,
 body.navigating #route-panel,
-body.navigating #layers-menu-wrapper,
+body.navigating #btn-layers,
+body.navigating #layers-panel,
+body.navigating #layers-backdrop,
 body.navigating #builder-toolbar,
 body.navigating #saved-routes-panel {
   display: none !important;

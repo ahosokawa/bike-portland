@@ -7,6 +7,7 @@ export interface RouteResult {
   elevations: number[]; // meters, one per coordinate
   ascend: number; // total meters gained
   descend: number; // total meters descended
+  hasElevation: boolean; // true if elevation data is real (BRouter), false if unavailable (PBOT-only)
   instructions: TurnInstruction[];
 }
 
