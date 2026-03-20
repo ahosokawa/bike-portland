@@ -238,6 +238,48 @@ function initLayersMenu(map: L.Map): void {
     closeLayersMenu();
   });
 
+  // Swipe-to-dismiss on the bottom sheet
+  let dragStartY = 0;
+  let dragging = false;
+
+  const onDragStart = (y: number) => {
+    // Only start drag when sheet content is scrolled to top
+    const content = layersPanel.querySelector('.sheet-content') as HTMLElement | null;
+    if (content && content.scrollTop > 0) return;
+    dragStartY = y;
+    dragging = true;
+    layersPanel.style.transition = 'none';
+  };
+
+  const onDragMove = (y: number) => {
+    if (!dragging) return;
+    const dy = Math.max(0, y - dragStartY);
+    layersPanel.style.transform = `translateY(${dy}px)`;
+  };
+
+  const onDragEnd = (y: number) => {
+    if (!dragging) return;
+    dragging = false;
+    layersPanel.style.transition = '';
+    const dy = y - dragStartY;
+    if (dy > 80) {
+      closeLayersMenu();
+    }
+    layersPanel.style.transform = '';
+  };
+
+  layersPanel.addEventListener('touchstart', (e) => {
+    onDragStart(e.touches[0].clientY);
+  }, { passive: true });
+
+  layersPanel.addEventListener('touchmove', (e) => {
+    onDragMove(e.touches[0].clientY);
+  }, { passive: true });
+
+  layersPanel.addEventListener('touchend', (e) => {
+    onDragEnd(e.changedTouches[0].clientY);
+  });
+
   // Legend collapse toggle
   const legendToggle = layersPanel.querySelector('.legend-toggle');
   if (legendToggle) {
@@ -285,7 +327,10 @@ function initLayersMenu(map: L.Map): void {
 }
 
 function closeLayersMenu(): void {
-  $('layers-panel').classList.remove('visible');
+  const panel = $('layers-panel');
+  panel.style.transform = '';
+  panel.style.transition = '';
+  panel.classList.remove('visible');
   $('layers-backdrop').classList.remove('visible');
   $('btn-layers').classList.remove('active');
 }
