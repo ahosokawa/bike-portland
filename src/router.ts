@@ -40,7 +40,7 @@ async function fetchRoute(lonlats: string, profileOverride?: string): Promise<BR
     format: 'geojson',
   });
 
-  const res = await fetch(`${BROUTER_URL}?${params}`);
+  const res = await fetch(`${BROUTER_URL}?${params}`, { signal: AbortSignal.timeout(15000) });
   if (!res.ok) {
     throw new Error(`Routing failed: ${res.status} ${res.statusText}`);
   }

@@ -418,7 +418,7 @@ async function handleLocate(): Promise<void> {
     }
     tryRoute();
   } catch {
-    alert('Could not get your location. Please enable location services.');
+    showToast('Could not get your location. Please enable location services.');
   } finally {
     btn.classList.remove('locating');
   }
@@ -469,7 +469,7 @@ async function handleRoute(): Promise<void> {
     showRoutePanel(route);
   } catch (err) {
     if (requestId !== routeRequestId) return;
-    alert(`Routing error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    showToast(`Routing error: ${err instanceof Error ? err.message : 'Unknown error'}`);
   } finally {
     if (requestId === routeRequestId) {
       $('loading').classList.add('hidden');
@@ -737,7 +737,7 @@ function handleEnterPreferences(map: L.Map): void {
   if (layer) {
     pbotClickHandler = (e: L.LeafletEvent) => {
       const le = e as L.LeafletMouseEvent;
-      const featureLayer = (le as any).layer;
+      const featureLayer = (le as L.LeafletMouseEvent & { layer?: { feature?: GeoJSON.Feature } }).layer;
       const feature = featureLayer?.feature;
       if (!feature) return;
 
@@ -774,7 +774,7 @@ function handleEnterPreferences(map: L.Map): void {
 
   // Map click handler — multi-waypoint drawing for custom segments
   prefMapClickHandler = (e: L.LeafletMouseEvent) => {
-    if ((e as any).originalEvent._pbotHandled) return;
+    if ((e.originalEvent as MouseEvent & { _pbotHandled?: boolean })._pbotHandled) return;
     addPrefWaypoint(map, e.latlng);
   };
   map.on('click', prefMapClickHandler);
@@ -782,7 +782,7 @@ function handleEnterPreferences(map: L.Map): void {
   // Mark PBOT layer clicks so the map handler ignores them
   if (layer) {
     prefPbotFlagHandler = (e: L.LeafletEvent) => {
-      ((e as L.LeafletMouseEvent).originalEvent as any)._pbotHandled = true;
+      ((e as L.LeafletMouseEvent).originalEvent as MouseEvent & { _pbotHandled?: boolean })._pbotHandled = true;
     };
     layer.on('click', prefPbotFlagHandler);
   }
@@ -1139,7 +1139,7 @@ async function handleLoadSavedRoute(id: string): Promise<void> {
       route = saved.cachedRoute;
       showToast('Loaded from cache (offline)');
     } else {
-      alert('Could not load route. No cached version available — connect to the internet and try again.');
+      showToast('Could not load route. No cached version available — connect to the internet and try again.');
       $('loading').classList.add('hidden');
       return;
     }

@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { buildGraph, findGuidedWaypoints, findPbotPath, nk, canonicalEdgeKey, injectPolylineEdges } from './pbot-graph';
+import { buildGraph, findPbotPath, nk, canonicalEdgeKey, injectPolylineEdges } from './pbot-graph';
 import type { PbotPathResult } from './pbot-graph';
 import { indexBusyRoads } from './busy-roads';
 import { haversine } from './geo';
-import type { Waypoint } from './types';
 
 // Load actual PBOT data for integration-style route tests
 beforeAll(() => {
@@ -14,21 +13,6 @@ beforeAll(() => {
   indexBusyRoads(busy);
   buildGraph(pbot);
 });
-
-// Helper: check if any waypoint is within `radius` meters of a point
-function hasWaypointNear(wps: Waypoint[], lat: number, lng: number, radius: number): boolean {
-  return wps.some(wp => haversine([wp.lat, wp.lng], [lat, lng]) < radius);
-}
-
-// Helper: find max gap between consecutive waypoints
-function maxGap(wps: Waypoint[]): number {
-  let max = 0;
-  for (let i = 0; i < wps.length - 1; i++) {
-    const d = haversine([wps[i].lat, wps[i].lng], [wps[i + 1].lat, wps[i + 1].lng]);
-    if (d > max) max = d;
-  }
-  return max;
-}
 
 // Real geocoded coordinates from Photon
 const COOK_431 = { lat: 45.5473593, lng: -122.6608221 };
@@ -44,101 +28,6 @@ const MORRIS_7TH = { lat: 45.54467, lng: -122.65859 };  // east/7th-side endpoin
 const MUP_OMSI_AREA = { lat: 45.50150, lng: -122.66122 };
 const MUP_INNER_SE = { lat: 45.49023, lng: -122.65565 };
 const MUP_SE_4TH = { lat: 45.48088, lng: -122.65475 };
-
-describe('431 NE Cook → The Redd on Salmon St', () => {
-  it('should use the NE Morris greenway crossing of MLK', () => {
-    const wps = findGuidedWaypoints(COOK_431.lat, COOK_431.lng, THE_REDD.lat, THE_REDD.lng);
-    expect(wps).not.toBeNull();
-
-    // Waypoints should guide BRouter through the Morris greenway crossing
-    // (sampled at ~200m intervals, so allow up to 100m radius for matching)
-    expect(hasWaypointNear(wps!, MORRIS_MLK.lat, MORRIS_MLK.lng, 100)).toBe(true);
-    expect(hasWaypointNear(wps!, MORRIS_7TH.lat, MORRIS_7TH.lng, 100)).toBe(true);
-  });
-
-  it('should not route north to NE Stanton for MLK crossing', () => {
-    const wps = findGuidedWaypoints(COOK_431.lat, COOK_431.lng, THE_REDD.lat, THE_REDD.lng);
-    expect(wps).not.toBeNull();
-
-    // The start is at ~45.5474. No waypoint should go north of the start
-    // (route heads south to The Redd). Stanton detour would show waypoints
-    // significantly north of the start.
-    const hasNorthDetour = wps!.some(wp => wp.lat > COOK_431.lat + 0.002);
-    expect(hasNorthDetour).toBe(false);
-  });
-
-  it('should have the Morris crossing before any waypoint west of MLK', () => {
-    const wps = findGuidedWaypoints(COOK_431.lat, COOK_431.lng, THE_REDD.lat, THE_REDD.lng);
-    expect(wps).not.toBeNull();
-
-    // The Morris greenway crossing should appear early in the waypoints,
-    // guiding BRouter to cross MLK at a safe point
-    const morrisIdx = wps!.findIndex(wp =>
-      haversine([wp.lat, wp.lng], [MORRIS_MLK.lat, MORRIS_MLK.lng]) < 100
-    );
-    expect(morrisIdx).toBeGreaterThanOrEqual(0);
-    expect(morrisIdx).toBeLessThan(5); // should be among the first few waypoints
-  });
-});
-
-describe('431 NE Cook → Sellwood Park (Springwater corridor)', () => {
-  it('should include waypoints on the inner SE MUP path', () => {
-    const wps = findGuidedWaypoints(COOK_431.lat, COOK_431.lng, SELLWOOD_PARK.lat, SELLWOOD_PARK.lng);
-    expect(wps).not.toBeNull();
-
-    // Route should have waypoints along the inner SE MUP
-    // (previously dropped by thinning, creating a 2.6km gap)
-    expect(hasWaypointNear(wps!, MUP_OMSI_AREA.lat, MUP_OMSI_AREA.lng, 200)).toBe(true);
-    expect(hasWaypointNear(wps!, MUP_INNER_SE.lat, MUP_INNER_SE.lng, 200)).toBe(true);
-    expect(hasWaypointNear(wps!, MUP_SE_4TH.lat, MUP_SE_4TH.lng, 200)).toBe(true);
-  });
-
-  it('should not have gaps larger than 1500m', () => {
-    const wps = findGuidedWaypoints(COOK_431.lat, COOK_431.lng, SELLWOOD_PARK.lat, SELLWOOD_PARK.lng);
-    expect(wps).not.toBeNull();
-
-    // Waterfront corridor waypoints are skipped (BRouter handles that stretch
-    // autonomously) so gaps up to ~3km can appear through the waterfront zone.
-    // BRouter fills these correctly without crossing bridges.
-    expect(maxGap(wps!)).toBeLessThan(3000);
-  });
-
-  it('should use the Morris greenway crossing', () => {
-    const wps = findGuidedWaypoints(COOK_431.lat, COOK_431.lng, SELLWOOD_PARK.lat, SELLWOOD_PARK.lng);
-    expect(wps).not.toBeNull();
-
-    // Should use Morris crossing, same as the Redd route
-    expect(hasWaypointNear(wps!, MORRIS_MLK.lat, MORRIS_MLK.lng, 100)).toBe(true);
-  });
-});
-
-describe('431 NE Cook → Zoiglhaus Brewing (should still work)', () => {
-  it('should produce waypoints', () => {
-    const wps = findGuidedWaypoints(COOK_431.lat, COOK_431.lng, ZOIGLHAUS.lat, ZOIGLHAUS.lng);
-    expect(wps).not.toBeNull();
-    expect(wps!.length).toBeGreaterThan(5);
-  });
-
-  it('should not backtrack north or cross the river', () => {
-    const wps = findGuidedWaypoints(COOK_431.lat, COOK_431.lng, ZOIGLHAUS.lat, ZOIGLHAUS.lng);
-    expect(wps).not.toBeNull();
-
-    // No waypoint should go north of the start — the destination is south
-    const hasNorthDetour = wps!.some(wp => wp.lat > COOK_431.lat + 0.002);
-    expect(hasNorthDetour).toBe(false);
-
-    // No waypoint should cross the Willamette (west of -122.670)
-    const crossesRiver = wps!.some(wp => wp.lng < -122.670);
-    expect(crossesRiver).toBe(false);
-  });
-
-  it('should not have gaps larger than 3000m', () => {
-    const wps = findGuidedWaypoints(COOK_431.lat, COOK_431.lng, ZOIGLHAUS.lat, ZOIGLHAUS.lng);
-    expect(wps).not.toBeNull();
-    // Waterfront corridor is skipped — BRouter handles it autonomously
-    expect(maxGap(wps!)).toBeLessThan(3000);
-  });
-});
 
 // ========== findPbotPath tests (direct A* geometry rendering) ==========
 

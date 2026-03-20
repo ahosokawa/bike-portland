@@ -3,7 +3,6 @@
 
 import { haversine, pointToSegDist, pointToEdgeDist } from './geo';
 import { crossesBusyRoad, nearBusyRoad } from './busy-roads';
-import type { Waypoint } from './types';
 
 // ========== Types ==========
 
@@ -99,7 +98,14 @@ function gk(lat: number, lng: number): string {
 
 // ========== Graph construction ==========
 
-export function buildGraph(geojson: any): void {
+interface PbotFeatureCollection {
+  features: Array<{
+    geometry?: { type: string; coordinates: number[][] | number[][][] };
+    properties?: { ConnectionType?: string; StreetName?: string };
+  }>;
+}
+
+export function buildGraph(geojson: PbotFeatureCollection): void {
   const _n = new Map<string, GraphNode>();
   const _g = new Map<string, string[]>();
 
@@ -576,48 +582,6 @@ export function findPbotPath(
   };
 }
 
-/**
- * Find intermediate waypoints through the PBOT bike network between two points.
- * @deprecated Use findPbotPath instead — this was used to guide BRouter but
- * the new approach renders PBOT geometry directly.
- */
-export function findGuidedWaypoints(
-  startLat: number, startLng: number,
-  endLat: number, endLng: number,
-  profile: GuidanceProfile = 'safest',
-): Waypoint[] | null {
-  if (!nodes) return null;
-
-  const sk = snap(startLat, startLng);
-  const ek = snap(endLat, endLng);
-  if (!sk || !ek || sk === ek) return null;
-
-  const weights = PROFILE_WEIGHTS[profile];
-  const minCosts = PROFILE_MIN_COSTS[profile];
-  const edgePath = astar(sk, ek, weights, minCosts);
-  if (!edgePath || edgePath.length === 0) return null;
-
-  const waypoints: Waypoint[] = [];
-
-  for (let i = 0; i < edgePath.length; i++) {
-    const edge = edgePath[i];
-
-    if (edge.distance > LONG_EDGE && edge.coords.length > 2) {
-      const midIdx = Math.floor(edge.coords.length / 2);
-      const pt = edge.coords[midIdx];
-      waypoints.push({ lat: pt[0], lng: pt[1] });
-    }
-
-    if (i < edgePath.length - 1) {
-      const node = nodes.get(edge.target)!;
-      waypoints.push({ lat: node.lat, lng: node.lng });
-    }
-  }
-
-  return waypoints.length > 0 ? waypoints : null;
-}
-
-
 // ========== Route classification ==========
 
 export type InfraTier = 'path' | 'good' | 'lane' | 'caution' | 'avoid' | 'none';
@@ -713,32 +677,4 @@ export function classifyRoute(
   });
 }
 
-/** Debug: find nearest PBOT edge to a point, regardless of snap distance.
- *  Returns distance in meters, edge type, and tier. */
-export function debugNearestEdge(lat: number, lng: number): { dist: number; ct: string; tier: string } | null {
-  if (!edgeIndex) return null;
-
-  const bLat = Math.floor(lat * 1000);
-  const bLng = Math.floor(lng * 1000);
-  let bestDist = Infinity;
-  let bestCt = '';
-  const visited = new Set<IndexedEdge>();
-
-  for (let dl = -5; dl <= 5; dl++) {
-    for (let dn = -5; dn <= 5; dn++) {
-      const edges = edgeIndex.get(`${bLat + dl},${bLng + dn}`);
-      if (!edges) continue;
-      for (const edge of edges) {
-        if (edge.ct[0] === '_') continue;
-        if (visited.has(edge)) continue;
-        visited.add(edge);
-        const d = pointToEdgeDist([lat, lng], edge.coords);
-        if (d < bestDist) { bestDist = d; bestCt = edge.ct; }
-      }
-    }
-  }
-
-  if (!bestCt) return null;
-  return { dist: bestDist, ct: bestCt, tier: TIER_FROM_CT[bestCt] || 'none' };
-}
 

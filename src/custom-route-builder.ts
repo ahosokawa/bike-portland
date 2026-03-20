@@ -206,9 +206,9 @@ function autoCompute(): void {
       displayBuilderRoute(route.coordinates);
       if (onRouteComputed) onRouteComputed(route);
     })
-    .catch(() => {
+    .catch((err) => {
       if (requestId !== computeRequestId) return;
-      // Silently fail — preview line still shows the intent
+      console.debug('[PedalPDX] Builder route preview failed:', err);
     });
 }
 

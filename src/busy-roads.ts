@@ -25,7 +25,14 @@ const MAJOR_TYPES = new Set([
 
 // ========== Indexing ==========
 
-export function indexBusyRoads(geojson: any): void {
+interface BusyRoadsFeatureCollection {
+  features: Array<{
+    geometry?: { coordinates: number[][] };
+    properties?: { highway?: string };
+  }>;
+}
+
+export function indexBusyRoads(geojson: BusyRoadsFeatureCollection): void {
   const _segments: RoadSegment[] = [];
   const _grid = new Map<string, number[]>();
 

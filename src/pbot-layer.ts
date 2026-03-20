@@ -84,8 +84,8 @@ export async function loadPbotData(map: L.Map): Promise<void> {
         );
       },
     });
-  } catch {
-    // PBOT data not available — not critical
+  } catch (err) {
+    console.debug('[PedalPDX] PBOT layer unavailable:', err);
   }
 }
 

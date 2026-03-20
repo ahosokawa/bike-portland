@@ -2,6 +2,8 @@ const PHOTON_URL = 'https://photon.komoot.io/api/';
 const PHOTON_REVERSE_URL = 'https://photon.komoot.io/reverse';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
+const SEARCH_DEBOUNCE_MS = 300;
+const SEARCH_RESULT_LIMIT = '5';
 // Dynamic bias — defaults to Portland, updated from map viewport
 let biasLat = 45.52;
 let biasLon = -122.68;
@@ -83,7 +85,7 @@ export function initSearch(
     }
 
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => searchAddress(query, resultsDiv, input, onSelect), 300);
+    debounceTimer = setTimeout(() => searchAddress(query, resultsDiv, input, onSelect), SEARCH_DEBOUNCE_MS);
   }
 
   inputStart.addEventListener('input', () => {
@@ -151,7 +153,7 @@ async function fetchPhoton(query: string, useBbox = true): Promise<GeoResult[]> 
     q: query,
     lat: biasLat.toString(),
     lon: biasLon.toString(),
-    limit: '5',
+    limit: SEARCH_RESULT_LIMIT,
     lang: 'en',
   });
   if (useBbox) {
@@ -160,10 +162,10 @@ async function fetchPhoton(query: string, useBbox = true): Promise<GeoResult[]> 
     params.set('zoom', '10'); // wider proximity bias radius
   }
 
-  const res = await fetch(`${PHOTON_URL}?${params}`);
+  const res = await fetch(`${PHOTON_URL}?${params}`, { signal: AbortSignal.timeout(8000) });
   if (!res.ok) return [];
-  const data = await res.json();
-  const features: any[] = data.features || [];
+  const data: { features?: Array<{ properties?: PhotonProperties; geometry: { coordinates: [number, number] } }> } = await res.json();
+  const features = data.features || [];
   return features.map((f) => {
     const props = f.properties || {};
     const [lon, lat] = f.geometry.coordinates;
@@ -176,7 +178,7 @@ async function fetchNominatim(query: string, bounded = true): Promise<GeoResult[
   const params = new URLSearchParams({
     q: query,
     format: 'jsonv2',
-    limit: '5',
+    limit: SEARCH_RESULT_LIMIT,
     viewbox: `${minLon},${maxLat},${maxLon},${minLat}`, // left,top,right,bottom
     bounded: bounded ? '1' : '0',
     'accept-language': 'en',
@@ -184,9 +186,10 @@ async function fetchNominatim(query: string, bounded = true): Promise<GeoResult[
 
   const res = await fetch(`${NOMINATIM_URL}?${params}`, {
     headers: { 'User-Agent': 'PedalPDX/1.0' },
+    signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) return [];
-  const data: any[] = await res.json();
+  const data: Array<{ lat: string; lon: string; name?: string; display_name: string }> = await res.json();
   return data.map((r) => ({
     lat: parseFloat(r.lat),
     lon: parseFloat(r.lon),
@@ -262,7 +265,7 @@ async function reversePhoton(lat: number, lng: number): Promise<string | null> {
     lat: lat.toString(),
     lon: lng.toString(),
   });
-  const res = await fetch(`${PHOTON_REVERSE_URL}?${params}`);
+  const res = await fetch(`${PHOTON_REVERSE_URL}?${params}`, { signal: AbortSignal.timeout(8000) });
   if (!res.ok) return null;
   const data = await res.json();
   const f = data.features?.[0];
@@ -278,6 +281,7 @@ async function reverseNominatim(lat: number, lng: number): Promise<string | null
   });
   const res = await fetch(`${NOMINATIM_REVERSE_URL}?${params}`, {
     headers: { 'User-Agent': 'PedalPDX/1.0' },
+    signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) return null;
   const data = await res.json();
@@ -290,13 +294,23 @@ async function reverseNominatim(lat: number, lng: number): Promise<string | null
 
 // ========== Address formatting (Photon) ==========
 
+interface PhotonProperties {
+  name?: string;
+  street?: string;
+  housenumber?: string;
+  suburb?: string;
+  district?: string;
+  city?: string;
+  state?: string;
+}
+
 /** Is this a named place (business, park, etc.) rather than just a street address? */
-function isNamedPlace(p: any): boolean {
+function isNamedPlace(p: PhotonProperties): boolean {
   return !!(p.name && p.name !== p.street && p.name !== p.housenumber);
 }
 
 /** Primary display name for a result or reverse geocode. */
-function formatName(p: any): string {
+function formatName(p: PhotonProperties): string {
   // Named place: "Laurelhurst Theater", "Peninsula Park"
   if (isNamedPlace(p)) return p.name;
   // Street address: "431 Northeast Cook Street"
@@ -309,7 +323,7 @@ function formatName(p: any): string {
 }
 
 /** Secondary detail line for search results. */
-function formatDetail(p: any): string {
+function formatDetail(p: PhotonProperties): string {
   const parts: string[] = [];
   // For named places, show the street address first
   if (isNamedPlace(p)) {
