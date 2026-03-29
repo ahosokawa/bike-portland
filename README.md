@@ -2,6 +2,8 @@
 
 A mobile-first PWA for bike-friendly routing in Portland, OR. Uses official PBOT bicycle infrastructure data and BRouter's safety-optimized routing to generate routes that prefer protected bike lanes, neighborhood greenways, and multi-use paths.
 
+**[Learn more](https://ahosokawa.github.io/bike-portland/info/)** · **[Open the app](https://ahosokawa.github.io/bike-portland/)**
+
 ## Features
 
 - **Bike-optimized routing** — Two profiles: Bike Paths (PBOT A* pathfinding through Portland's bike network) and Direct (BRouter's low-traffic profile). Routes prefer cycleways, greenways, and low-traffic streets.
