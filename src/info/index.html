@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#d964b7" />
+  <meta name="description" content="PedalPDX — Bike-smart routing for Portland, OR. Color-coded bike infrastructure, turn-by-turn navigation, and offline support." />
+  <title>PedalPDX — Bike-Smart Routing for Portland</title>
+  <link rel="icon" href="/bike-portland/favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="/bike-portland/apple-touch-icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,700;0,9..144,900;1,9..144,400&family=Outfit:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./info.css" />
+</head>
+<body>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-topo"></div>
+    <div class="container hero-content">
+      <div class="hero-badge">
+        <img src="data:image/png;base64,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" alt="PedalPDX icon" width="52" height="52" class="hero-badge-img" />
+      </div>
+      <h1>Pedal<span class="text-accent">PDX</span></h1>
+      <p class="hero-tagline">Bike-smart routing for Portland</p>
+      <p class="hero-sub">Real bike infrastructure data from the City of Portland, color-coded on your map. Find the safest route — not just the shortest one.</p>
+      <a href="/bike-portland/" class="btn btn-primary">Open PedalPDX</a>
+    </div>
+    <div class="hero-infra-strip" aria-hidden="true">
+      <span style="--c:#00c853"></span>
+      <span style="--c:#2ecc71"></span>
+      <span style="--c:#2196f3"></span>
+      <span style="--c:#ff9800"></span>
+      <span style="--c:#e74c3c"></span>
+    </div>
+  </section>
+
+  <!-- Infrastructure -->
+  <section class="section section-infra">
+    <div class="container">
+      <p class="section-kicker">The difference</p>
+      <h2>Every street, classified</h2>
+      <p class="section-lead">PedalPDX uses official data from Portland Bureau of Transportation to classify every bikeable segment in the city. Your route lights up so you always know what you're riding on.</p>
+      <div class="infra-tiers">
+        <div class="tier">
+          <div class="tier-bar" style="--bar:#00c853"></div>
+          <div class="tier-info">
+            <strong>Multi-Use Path</strong>
+            <span>Car-free paths like the Springwater Corridor and Eastbank Esplanade</span>
+          </div>
+        </div>
+        <div class="tier">
+          <div class="tier-bar" style="--bar:#2ecc71"></div>
+          <div class="tier-info">
+            <strong>Greenway / Buffered Lane</strong>
+            <span>Neighborhood greenways and lanes with physical buffers</span>
+          </div>
+        </div>
+        <div class="tier">
+          <div class="tier-bar" style="--bar:#2196f3"></div>
+          <div class="tier-info">
+            <strong>Bike Lane</strong>
+            <span>Standard painted bike lanes and low-traffic streets</span>
+          </div>
+        </div>
+        <div class="tier">
+          <div class="tier-bar" style="--bar:#ff9800"></div>
+          <div class="tier-info">
+            <strong>Caution</strong>
+            <span>Medium to high traffic — rideable but be alert</span>
+          </div>
+        </div>
+        <div class="tier">
+          <div class="tier-bar" style="--bar:#e74c3c"></div>
+          <div class="tier-info">
+            <strong>Avoid</strong>
+            <span>Difficult connections — used only when no alternative exists</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Routing Profiles -->
+  <section class="section section-profiles">
+    <div class="container">
+      <p class="section-kicker">Two modes</p>
+      <h2>Pick your style</h2>
+      <div class="profile-cards">
+        <div class="profile-card">
+          <div class="profile-icon">
+            <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+              <path d="M6 30C6 30 10 10 18 10C26 10 30 30 30 30" stroke="#d964b7" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+              <path d="M4 20h28" stroke="#d964b7" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.4"/>
+              <circle cx="18" cy="10" r="3" fill="#d964b7"/>
+            </svg>
+          </div>
+          <h3>Bike Paths</h3>
+          <p class="profile-label">Safest</p>
+          <p>Routes through Portland's official bike network. Prioritizes multi-use paths, greenways, and buffered lanes — even if it's a bit longer.</p>
+        </div>
+        <div class="profile-card">
+          <div class="profile-icon">
+            <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+              <path d="M6 28L30 8" stroke="#d964b7" stroke-width="2.5" stroke-linecap="round"/>
+              <path d="M6 28L14 18L22 22L30 8" stroke="#d964b7" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.4"/>
+              <circle cx="6" cy="28" r="3" fill="#d964b7"/>
+              <circle cx="30" cy="8" r="3" fill="#d964b7"/>
+            </svg>
+          </div>
+          <h3>Direct</h3>
+          <p class="profile-label">Balanced</p>
+          <p>Shortest route that still favors low-traffic streets. For when you know the city and want to get there fast.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="section section-features">
+    <div class="container">
+      <p class="section-kicker">On the ride</p>
+      <h2>Everything you need, nothing you don't</h2>
+      <div class="features-grid">
+        <div class="feature">
+          <div class="feature-icon">
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <path d="M16 4v20M16 24l-6-6M16 24l6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M6 28h20" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <h3>Turn-by-turn</h3>
+          <p>Step-by-step directions with voice guidance. Keep your eyes on the road, not the screen.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <path d="M6 26L12 14L18 20L26 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="12" cy="14" r="2.5" fill="currentColor"/>
+              <circle cx="18" cy="20" r="2.5" fill="currentColor"/>
+            </svg>
+          </div>
+          <h3>Custom routes</h3>
+          <p>Build multi-waypoint routes through your favorite streets. Drag to adjust, save for later.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <rect x="5" y="8" width="22" height="18" rx="3" stroke="currentColor" stroke-width="2.5" fill="none"/>
+              <path d="M12 8V5a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+              <circle cx="16" cy="18" r="2" fill="currentColor"/>
+            </svg>
+          </div>
+          <h3>Works offline</h3>
+          <p>Routes and map tiles are cached on your device. Navigate even without cell service.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section class="section section-install">
+    <div class="container">
+      <p class="section-kicker">Get it</p>
+      <h2>Install on your phone</h2>
+      <p class="section-lead">PedalPDX is a web app — no app store needed. Add it to your home screen and it works just like a native app, including offline.</p>
+      <div class="install-cards">
+        <div class="install-card">
+          <h3 class="install-platform">iPhone</h3>
+          <div class="install-steps">
+            <div class="install-step"><span class="step-num">1</span> Open <a href="/bike-portland/">PedalPDX</a> in Safari</div>
+            <div class="install-step"><span class="step-num">2</span> Tap the Share button (square with arrow)</div>
+            <div class="install-step"><span class="step-num">3</span> Tap "Add to Home Screen"</div>
+            <div class="install-step"><span class="step-num">4</span> Tap "Add"</div>
+          </div>
+        </div>
+        <div class="install-card">
+          <h3 class="install-platform">Android</h3>
+          <div class="install-steps">
+            <div class="install-step"><span class="step-num">1</span> Open <a href="/bike-portland/">PedalPDX</a> in Chrome</div>
+            <div class="install-step"><span class="step-num">2</span> Tap the &#8942; menu (top right)</div>
+            <div class="install-step"><span class="step-num">3</span> Tap "Install app" or "Add to Home Screen"</div>
+            <div class="install-step"><span class="step-num">4</span> Tap "Install"</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <a href="/bike-portland/" class="btn btn-secondary">Open PedalPDX</a>
+      <div class="footer-links">
+        <a href="https://github.com/ahosokawa/bike-portland">GitHub</a>
+        <span class="footer-sep" aria-hidden="true">&middot;</span>
+        <span>Data from <a href="https://www.portland.gov/transportation">PBOT</a> &amp; <a href="https://www.openstreetmap.org/">OpenStreetMap</a></span>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

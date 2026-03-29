@@ -13,6 +13,7 @@ A mobile-first PWA for bike-friendly routing in Portland, OR. Uses official PBOT
 - **GPS start point** — "Use my location" to set your starting point.
 - **Installable PWA** — Add to home screen on iOS/Android. Caches tiles and bike data for faster loads.
 - **Fully static** — No backend, no API keys, no accounts. Deploys to GitHub Pages.
+- **Info page** — Landing page at `/info/` with install instructions, feature overview, and infrastructure legend.
 
 ## Quick Start
 
@@ -86,7 +87,10 @@ src/
   types.ts                Shared TypeScript interfaces
   pbot-graph.test.ts      Integration tests for A* routing
   style.css               Mobile-first styles, navigation HUD
-  index.html              Single page shell
+  index.html              App entry point
+  info/
+    index.html            Informational landing page (static HTML)
+    info.css              Landing page styles
 scripts/
   fetch-pbot-data.ts      Build-time PBOT data fetcher
   fetch-busy-roads.ts     Build-time busy roads fetcher (Overpass)

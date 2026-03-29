@@ -1,15 +1,36 @@
+import { resolve } from 'path';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
   base: '/bike-portland/',
+  appType: 'mpa',
   root: 'src',
   publicDir: '../public',
   build: {
     outDir: '../dist',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'src/index.html'),
+        info: resolve(__dirname, 'src/info/index.html'),
+      },
+    },
   },
   plugins: [
+    {
+      name: 'trailing-slash-redirect',
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          if (req.url === '/bike-portland/info') {
+            res.writeHead(301, { Location: '/bike-portland/info/' });
+            res.end();
+            return;
+          }
+          next();
+        });
+      },
+    },
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
@@ -31,6 +52,7 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,png,geojson}'],
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024, // 6MB for PBOT geojson
+        navigateFallbackDenylist: [/^\/bike-portland\/info/],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/[abc]\.tile\.openstreetmap\.org\/.*/,
