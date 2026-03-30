@@ -51,7 +51,7 @@ import { saveRoute as dbSaveRoute, getAllRoutes, getRoute, deleteRoute, getHomeA
 import type { NavUpdate } from './navigation';
 import type { AppState, RouteResult, SavedRoute, HomeAddress } from './types';
 import { turnIconSvg } from './icons';
-import { METERS_PER_MILE, FEET_PER_METER } from './geo';
+import { METERS_PER_MILE, FEET_PER_METER, computeDistance } from './geo';
 
 const state: AppState = {
   mode: 'start',
@@ -834,7 +834,7 @@ function addPrefWaypoint(map: L.Map, latlng: L.LatLng): void {
       ).addTo(map);
 
       updatePrefButtons();
-      const miles = (computePrefDistance() / 1609.34).toFixed(1);
+      const miles = (computeDistance(prefRouteCoords) / METERS_PER_MILE).toFixed(1);
       $('preferences-status').textContent = `${prefWaypoints.length} points \u00B7 ${miles} mi`;
     })
     .catch(() => {
@@ -848,17 +848,6 @@ function addPrefWaypoint(map: L.Map, latlng: L.LatLng): void {
     });
 }
 
-function computePrefDistance(): number {
-  let d = 0;
-  for (let i = 1; i < prefRouteCoords.length; i++) {
-    const [lat1, lng1] = prefRouteCoords[i - 1];
-    const [lat2, lng2] = prefRouteCoords[i];
-    const dlat = (lat2 - lat1) * 111320;
-    const dlng = (lng2 - lng1) * 111320 * Math.cos(lat1 * Math.PI / 180);
-    d += Math.sqrt(dlat * dlat + dlng * dlng);
-  }
-  return d;
-}
 
 function handlePrefUndo(): void {
   const map = getMap();
@@ -889,25 +878,25 @@ function handlePrefUndo(): void {
 
   $('preferences-status').textContent = 'Recalculating...';
 
-  // Chain BRouter calls for each consecutive pair
-  let chain = Promise.resolve();
+  // Fetch all segments in parallel, then concatenate in order
+  const segmentPromises = [];
   for (let i = 1; i < prefWaypoints.length; i++) {
     const prev = prefWaypoints[i - 1];
     const cur = prefWaypoints[i];
-    chain = chain.then(() =>
-      fetchRoadGeometry(prev.lat, prev.lng, cur.lat, cur.lng).then(segCoords => {
-        if (reqId !== prefComputeId) return;
-        if (segCoords.length < 2) return;
-        const startIdx = prefRouteCoords.length === 0 ? 0 : 1;
-        for (let j = startIdx; j < segCoords.length; j++) {
-          prefRouteCoords.push(segCoords[j]);
-        }
-      })
+    segmentPromises.push(
+      fetchRoadGeometry(prev.lat, prev.lng, cur.lat, cur.lng).catch(() => [] as [number, number][])
     );
   }
 
-  chain.then(() => {
+  Promise.all(segmentPromises).then(segments => {
     if (reqId !== prefComputeId) return;
+    for (const segCoords of segments) {
+      if (segCoords.length < 2) continue;
+      const startIdx = prefRouteCoords.length === 0 ? 0 : 1;
+      for (let j = startIdx; j < segCoords.length; j++) {
+        prefRouteCoords.push(segCoords[j]);
+      }
+    }
     if (prefRouteCoords.length >= 2) {
       prefRouteLine = L.polyline(
         prefRouteCoords.map(c => L.latLng(c[0], c[1])),
@@ -915,7 +904,7 @@ function handlePrefUndo(): void {
       ).addTo(map);
     }
     updatePrefButtons();
-    const miles = (computePrefDistance() / 1609.34).toFixed(1);
+    const miles = (computeDistance(prefRouteCoords) / METERS_PER_MILE).toFixed(1);
     $('preferences-status').textContent = `${prefWaypoints.length} points \u00B7 ${miles} mi`;
   });
 }
@@ -1000,20 +989,17 @@ function showPbotPreferencePopup(
       const action = btn.dataset.action;
 
       if (action === 'prefer' || action === 'block') {
-        for (let i = 0; i < edgeKeys.length; i++) {
-          const pref: EdgePreference = {
-            edgeKey: edgeKeys[i],
-            type: action === 'prefer' ? 'preferred' : 'nogo',
-            name,
-            coords: [edgeCoords[i]],
-            createdAt: Date.now(),
-          };
-          await setPreference(pref);
-        }
+        const type = action === 'prefer' ? 'preferred' : 'nogo' as const;
+        const prefs: EdgePreference[] = edgeKeys.map((ek, i) => ({
+          edgeKey: ek,
+          type,
+          name,
+          coords: [edgeCoords[i]],
+          createdAt: Date.now(),
+        }));
+        await setPreferenceGroup(prefs);
       } else if (action === 'clear') {
-        for (const ek of edgeKeys) {
-          await removePreference(ek);
-        }
+        await Promise.all(edgeKeys.map(ek => removePreference(ek)));
       }
 
       map.closePopup();

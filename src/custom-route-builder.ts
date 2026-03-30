@@ -128,34 +128,6 @@ export function clearAllWaypoints(): void {
 
 // ========== Internals ==========
 
-function rebuildMarkers(): void {
-  for (const m of waypointMarkers) {
-    map.removeLayer(m);
-  }
-  waypointMarkers = [];
-
-  for (let i = 0; i < waypoints.length; i++) {
-    const wp = waypoints[i];
-    const marker = L.marker(L.latLng(wp.lat, wp.lng), {
-      icon: createWaypointIcon(i),
-      draggable: true,
-      zIndexOffset: 500,
-    }).addTo(map);
-
-    marker.on('dragend', () => {
-      const pos = marker.getLatLng();
-      const idx = waypointMarkers.indexOf(marker);
-      if (idx >= 0) {
-        waypoints[idx] = { lat: pos.lat, lng: pos.lng };
-        updatePreviewLine();
-        autoCompute();
-      }
-    });
-
-    waypointMarkers.push(marker);
-  }
-}
-
 function updatePreviewLine(): void {
   if (previewLine) {
     map.removeLayer(previewLine);

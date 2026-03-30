@@ -35,6 +35,7 @@ let arrived = false;
 
 // Precomputed cumulative distances along route polyline
 let segmentCumDist: number[] = [];
+let lastSnapIndex = 0; // track last known segment for locality optimization
 
 export function startNavigation(
   routeData: RouteResult,
@@ -47,6 +48,7 @@ export function startNavigation(
   lastAnnouncedIndex = -1;
   lastAnnounceTime = 0;
   arrived = false;
+  lastSnapIndex = 0;
 
   // Precompute cumulative distances along the route polyline
   segmentCumDist = [0];
@@ -168,20 +170,40 @@ function snapToRoute(lat: number, lng: number): SnapResult {
   let bestDist = Infinity;
   let bestAlongRoute = 0;
   let bestPoint: [number, number] = coords[0];
+  let bestIdx = 0;
 
-  for (let i = 0; i < coords.length - 1; i++) {
-    const a = coords[i];
-    const b = coords[i + 1];
-    const result = pointToSegProject([lat, lng], a, b);
+  // Search near the last known position first (±20 segments)
+  const LOCALITY_RADIUS = 20;
+  const localStart = Math.max(0, lastSnapIndex - LOCALITY_RADIUS);
+  const localEnd = Math.min(coords.length - 1, lastSnapIndex + LOCALITY_RADIUS);
 
+  for (let i = localStart; i < localEnd; i++) {
+    const result = pointToSegProject([lat, lng], coords[i], coords[i + 1]);
     if (result.distance < bestDist) {
       bestDist = result.distance;
       bestPoint = result.closest;
-      // Distance along route = cumulative distance to segment start + fraction of segment
+      bestIdx = i;
       const segLen = segmentCumDist[i + 1] - segmentCumDist[i];
       bestAlongRoute = segmentCumDist[i] + result.t * segLen;
     }
   }
+
+  // If local search found a close match, skip the full scan
+  if (bestDist > OFF_ROUTE_THRESHOLD) {
+    for (let i = 0; i < coords.length - 1; i++) {
+      if (i >= localStart && i < localEnd) continue; // already checked
+      const result = pointToSegProject([lat, lng], coords[i], coords[i + 1]);
+      if (result.distance < bestDist) {
+        bestDist = result.distance;
+        bestPoint = result.closest;
+        bestIdx = i;
+        const segLen = segmentCumDist[i + 1] - segmentCumDist[i];
+        bestAlongRoute = segmentCumDist[i] + result.t * segLen;
+      }
+    }
+  }
+
+  lastSnapIndex = bestIdx;
 
   return {
     distanceFromRoute: bestDist,

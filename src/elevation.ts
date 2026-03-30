@@ -26,8 +26,8 @@ export function drawElevationProfile(
   const plotW = w - padding.left - padding.right;
   const plotH = h - padding.top - padding.bottom;
 
-  const minElev = Math.min(...elevations);
-  const maxElev = Math.max(...elevations);
+  let minElev = Infinity, maxElev = -Infinity;
+  for (const e of elevations) { if (e < minElev) minElev = e; if (e > maxElev) maxElev = e; }
   const elevRange = maxElev - minElev || 1;
 
   // Draw filled area

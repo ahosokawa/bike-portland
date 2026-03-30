@@ -1,7 +1,7 @@
 // Builds a routable graph from PBOT bike infrastructure GeoJSON and provides
 // A* pathfinding to guide BRouter through streets with known bike infrastructure.
 
-import { haversine, pointToSegDist, pointToEdgeDist, bearing } from './geo';
+import { haversine, computeDistance, pointToSegDist, pointToEdgeDist, bearing } from './geo';
 import { crossesBusyRoad, nearBusyRoad, onewayDirection } from './busy-roads';
 
 // ========== Types ==========
@@ -155,10 +155,7 @@ export function buildGraph(geojson: PbotFeatureCollection): void {
       // Convert to [lat, lng] for internal use
       const pts: [number, number][] = line.map(c => [c[1], c[0]] as [number, number]);
 
-      let dist = 0;
-      for (let i = 1; i < pts.length; i++) {
-        dist += haversine(pts[i - 1], pts[i]);
-      }
+      const dist = computeDistance(pts);
 
       // On one-way streets, only create the edge matching traffic direction.
       // MUPs/paths are separated infrastructure — always bidirectional.
@@ -262,10 +259,7 @@ export function injectEdge(
   const nodeA = nodes.get(keyA)!;
   if (nodeA.edges.some(e => e.target === keyB)) return;
 
-  let dist = 0;
-  for (let i = 1; i < coords.length; i++) {
-    dist += haversine(coords[i - 1], coords[i]);
-  }
+  const dist = computeDistance(coords);
 
   const ct = '_PREF'; // synthetic preference edge
   const b = edgeBearings(coords);
@@ -647,6 +641,8 @@ export function classifyRoute(
   const preferredCoords = overrides?.preferred;
   const nogoCoords = overrides?.nogo;
 
+  const visited = new Set<IndexedEdge>();
+
   return coords.map(([lat, lng]) => {
     // Nogo edges take highest priority — show red
     if (nogoCoords) {
@@ -671,7 +667,7 @@ export function classifyRoute(
     let bestRealDist = CLASSIFY_SNAP;
     let bestGapTier: InfraTier = 'none';
     let bestGapDist = CLASSIFY_SNAP;
-    const visited = new Set<IndexedEdge>();
+    visited.clear();
 
     for (let dl = -1; dl <= 1; dl++) {
       for (let dn = -1; dn <= 1; dn++) {
