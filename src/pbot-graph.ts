@@ -1,8 +1,8 @@
 // Builds a routable graph from PBOT bike infrastructure GeoJSON and provides
 // A* pathfinding to guide BRouter through streets with known bike infrastructure.
 
-import { haversine, pointToSegDist, pointToEdgeDist } from './geo';
-import { crossesBusyRoad, nearBusyRoad } from './busy-roads';
+import { haversine, pointToSegDist, pointToEdgeDist, bearing } from './geo';
+import { crossesBusyRoad, nearBusyRoad, onewayDirection } from './busy-roads';
 
 // ========== Types ==========
 
@@ -18,6 +18,8 @@ interface GraphEdge {
   distance: number;             // actual meters
   coords: [number, number][];   // [lat, lng] points along segment
   name: string;                 // street/path name from PBOT StreetName
+  inBearing: number;            // bearing of first segment (for turn penalty)
+  outBearing: number;           // bearing of last segment (for turn penalty)
 }
 
 // ========== Per-profile edge weights ==========
@@ -30,7 +32,7 @@ export type GuidanceProfile = 'safest';
 const WEIGHTS_SAFEST: Record<string, number> = {
   'MUP_P': 0.15, 'MUP_U': 0.2, 'BL-MUP': 0.15,
   'NG': 0.5, 'BBL': 0.5,
-  'BL': 1.8, 'SR_LT': 1.5, 'SC': 1.8, 'BL-SR_LT': 1.6,
+  'BL': 1.2, 'SR_LT': 1.5, 'SC': 1.5, 'BL-SR_LT': 1.4,
   'SR_MT': 12.0, 'BL-SR_MT': 10.0, 'BL_VHT': 15.0,
   'DC': 3.0, 'SR_DC': 3.5, 'BL-DC': 2.5, 'SR_MT-DC': 15.0,
   '_GAP': 2.0,         // gap-bridging edges: unknown residential roads
@@ -62,6 +64,16 @@ const SAFE_WEIGHT = 0.5;       // weight for user-preferred edges (= greenway/bu
 const MAX_SNAP_DIST = 500;     // max meters from point to nearest PBOT node
 const GAP_BRIDGE_DIST = 250;   // max meters for synthetic gap-bridging edges
 const LONG_EDGE = 500;         // meters - edges longer than this get a midpoint sample
+const TURN_COST = 50;          // fixed cost for sharp direction changes (>60°) at junctions
+
+/** Compute entry/exit bearings for an edge's coordinate array. */
+function edgeBearings(coords: [number, number][]): { inBearing: number; outBearing: number } {
+  if (coords.length < 2) return { inBearing: 0, outBearing: 0 };
+  return {
+    inBearing: bearing(coords[0], coords[1]),
+    outBearing: bearing(coords[coords.length - 2], coords[coords.length - 1]),
+  };
+}
 
 // ========== Module state ==========
 
@@ -148,9 +160,18 @@ export function buildGraph(geojson: PbotFeatureCollection): void {
         dist += haversine(pts[i - 1], pts[i]);
       }
 
-      // Bidirectional edges — weight computed at query time per profile
-      _n.get(kA)!.edges.push({ target: kB, ct, distance: dist, coords: pts, name });
-      _n.get(kB)!.edges.push({ target: kA, ct, distance: dist, coords: [...pts].reverse(), name });
+      // On one-way streets, only create the edge matching traffic direction.
+      // MUPs/paths are separated infrastructure — always bidirectional.
+      const isSeparated = ct.startsWith('MUP') || ct === 'BL-MUP';
+      const owDir = isSeparated ? null : onewayDirection(pts[0][0], pts[0][1], pts[pts.length - 1][0], pts[pts.length - 1][1]);
+      const fwd = edgeBearings(pts);
+      if (owDir !== 'reverse') {
+        _n.get(kA)!.edges.push({ target: kB, ct, distance: dist, coords: pts, name, ...fwd });
+      }
+      if (owDir !== 'forward') {
+        const rev = [...pts].reverse() as [number, number][];
+        _n.get(kB)!.edges.push({ target: kA, ct, distance: dist, coords: rev, name, inBearing: (fwd.outBearing + 180) % 360, outBearing: (fwd.inBearing + 180) % 360 });
+      }
     }
   }
 
@@ -247,9 +268,10 @@ export function injectEdge(
   }
 
   const ct = '_PREF'; // synthetic preference edge
-  nodeA.edges.push({ target: keyB, ct, distance: dist, coords, name });
+  const b = edgeBearings(coords);
+  nodeA.edges.push({ target: keyB, ct, distance: dist, coords, name, ...b });
   const nodeB = nodes.get(keyB)!;
-  nodeB.edges.push({ target: keyA, ct, distance: dist, coords: [...coords].reverse(), name });
+  nodeB.edges.push({ target: keyA, ct, distance: dist, coords: [...coords].reverse(), name, inBearing: (b.outBearing + 180) % 360, outBearing: (b.inBearing + 180) % 360 });
 }
 
 /**
@@ -334,8 +356,9 @@ function connectToGraph(injectedKey: string, lat: number, lng: number): void {
         const injected = nodes.get(injectedKey)!;
         if (injected.edges.some(e => e.target === k)) continue;
         const coords: [number, number][] = [[lat, lng], [n.lat, n.lng]];
-        injected.edges.push({ target: k, ct: '_GAP', distance: d, coords, name: '' });
-        n.edges.push({ target: injectedKey, ct: '_GAP', distance: d, coords: [[n.lat, n.lng], [lat, lng]], name: '' });
+        const b = edgeBearings(coords);
+        injected.edges.push({ target: k, ct: '_GAP', distance: d, coords, name: '', ...b });
+        n.edges.push({ target: injectedKey, ct: '_GAP', distance: d, coords: [[n.lat, n.lng], [lat, lng]], name: '', inBearing: (b.outBearing + 180) % 360, outBearing: (b.inBearing + 180) % 360 });
       }
     }
   }
@@ -371,8 +394,9 @@ function addGapBridges(): void {
           const severity = crossesBusyRoad(node.lat, node.lng, other.lat, other.lng);
           const ct = severity === 'major' ? '_GAP_MAJOR' : severity === 'secondary' ? '_GAP_BUSY' : '_GAP';
           const coords: [number, number][] = [[node.lat, node.lng], [other.lat, other.lng]];
-          node.edges.push({ target: otherKey, ct, distance: d, coords, name: '' });
-          other.edges.push({ target: key, ct, distance: d, coords: [[other.lat, other.lng], [node.lat, node.lng]], name: '' });
+          const b = edgeBearings(coords);
+          node.edges.push({ target: otherKey, ct, distance: d, coords, name: '', ...b });
+          other.edges.push({ target: key, ct, distance: d, coords: [[other.lat, other.lng], [node.lat, node.lng]], name: '', inBearing: (b.outBearing + 180) % 360, outBearing: (b.inBearing + 180) % 360 });
           connected.add(otherKey);
         }
       }
@@ -500,7 +524,16 @@ function astar(startKey: string, endKey: string, weights: Record<string, number>
         }
       }
 
-      const edgeCost = Math.max(edge.distance * (weights[edge.ct] ?? 3.0), minCosts[edge.ct] ?? 0);
+      // Turn penalty: discourage sharp direction changes (zigzag routes)
+      let turnPenalty = 0;
+      if (from.has(cur)) {
+        const prev = from.get(cur)!.edge;
+        let diff = Math.abs(edge.inBearing - prev.outBearing);
+        if (diff > 180) diff = 360 - diff;
+        if (diff > 60) turnPenalty = TURN_COST;
+      }
+
+      const edgeCost = Math.max(edge.distance * (weights[edge.ct] ?? 3.0), minCosts[edge.ct] ?? 0) + turnPenalty;
       const ng = g + edgeCost;
       if (ng >= (gCost.get(edge.target) ?? Infinity)) continue;
 

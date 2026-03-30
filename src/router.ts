@@ -81,14 +81,15 @@ export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteRes
   return parseRouteFeature(feature);
 }
 
-/** Fetch raw road geometry between two points using BRouter (shortest profile).
+/** Fetch raw road geometry between two points using BRouter.
  *  Returns [lat, lng][] coordinates following real roads. */
 export async function fetchRoadGeometry(
   startLat: number, startLng: number,
   endLat: number, endLng: number,
+  profile = 'shortest',
 ): Promise<[number, number][]> {
   const lonlats = `${startLng},${startLat}|${endLng},${endLat}`;
-  const feature = await fetchRoute(lonlats, 'shortest');
+  const feature = await fetchRoute(lonlats, profile);
   return feature.geometry.coordinates.map(c => [c[1], c[0]] as [number, number]);
 }
 
@@ -144,13 +145,28 @@ async function resolveGapEdges(edges: PbotEdge[]): Promise<void> {
       const e = edges[i];
       const start = e.coords[0];
       const end = e.coords[e.coords.length - 1];
-      return fetchRoadGeometry(start[0], start[1], end[0], end[1]).catch(() => null);
+      // Use bike profile to avoid highway ramps/one-way car streets near bridges
+      return fetchRoadGeometry(start[0], start[1], end[0], end[1], 'fastbike-lowtraffic').catch(() => null);
     }),
   );
 
   for (let j = 0; j < gapIndices.length; j++) {
     if (results[j] && results[j]!.length >= 2) {
-      edges[gapIndices[j]].coords = results[j]!;
+      const resolved = results[j]!;
+      const edge = edges[gapIndices[j]];
+
+      // Reject resolved geometry that loops excessively — if the road
+      // distance is more than 3x the straight-line gap, the resolution
+      // likely routed through highway ramps or one-way streets.
+      const resolvedDist = computeDistance(resolved);
+      if (resolvedDist > edge.distance * 3) continue;
+
+      // Snap resolved endpoints to original PBOT node positions so edges
+      // connect cleanly when concatenated in buildRouteFromPbotPath
+      // (which skips index 0 of subsequent edges assuming endpoint match).
+      resolved[0] = edge.coords[0];
+      resolved[resolved.length - 1] = edge.coords[edge.coords.length - 1];
+      edge.coords = resolved;
     }
   }
 }

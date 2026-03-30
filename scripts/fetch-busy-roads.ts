@@ -11,7 +11,7 @@ const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 const BBOX = '45.43,-122.83,45.60,-122.47';
 
 const QUERY = `
-[out:json][bbox:${BBOX}];
+[out:json][bbox:${BBOX}][timeout:180];
 way["highway"~"^(trunk|primary|secondary|motorway|trunk_link|primary_link|secondary_link|motorway_link)$"];
 out geom;
 `;
@@ -26,7 +26,7 @@ interface OverpassElement {
 interface Feature {
   type: 'Feature';
   geometry: { type: 'LineString'; coordinates: number[][] };
-  properties: { highway: string; name?: string };
+  properties: { highway: string; name?: string; oneway?: string };
 }
 
 async function main(): Promise<void> {
@@ -64,6 +64,7 @@ async function main(): Promise<void> {
       properties: {
         highway: el.tags?.highway || 'unknown',
         ...(el.tags?.name ? { name: el.tags.name } : {}),
+        ...(el.tags?.oneway ? { oneway: el.tags.oneway } : {}),
       },
     });
   }

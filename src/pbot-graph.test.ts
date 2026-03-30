@@ -132,6 +132,42 @@ describe('findPbotPath: Cook → Zoiglhaus', () => {
   });
 });
 
+// ========== One-way street tests ==========
+
+// Broadway Bridge approach — ensure the route goes directly onto the bridge
+// rather than detouring via Larrabee or other side streets.
+const NW_10TH = { lat: 45.5273, lng: -122.6810 };
+// N Weidler is one-way westbound — route should NOT go eastbound on it
+const WEIDLER_AREA = { lat: 45.53425, lng: -122.6635 };
+
+describe('findPbotPath: Cook → NW 10th (Broadway Bridge)', () => {
+  it('should go directly on Broadway to the bridge (no Larrabee detour)', () => {
+    const path = findPbotPath(COOK_431.lat, COOK_431.lng, NW_10TH.lat, NW_10TH.lng)!;
+    expect(path).not.toBeNull();
+    // The route should have Broadway edges continuing past Larrabee toward
+    // Interstate, not turning north on Larrabee to access the bridge ramp.
+    const hasLarrabeeUturn = path.edges.some(e =>
+      e.name.includes('LARRABEE') && e.name.includes('BRG RAMP'),
+    );
+    expect(hasLarrabeeUturn).toBe(false);
+  });
+
+  it('should not go east on one-way Weidler', () => {
+    const path = findPbotPath(COOK_431.lat, COOK_431.lng, NW_10TH.lat, NW_10TH.lng)!;
+    expect(path).not.toBeNull();
+    // Weidler is one-way westbound around lng -122.66. If the route passes
+    // through this area it should be heading west, not east. Check that
+    // no edge on Weidler has an eastward trajectory.
+    for (const edge of path.edges) {
+      if (!edge.name.toLowerCase().includes('weidler')) continue;
+      const first = edge.coords[0];
+      const last = edge.coords[edge.coords.length - 1];
+      // Eastward = longitude increasing (less negative)
+      expect(last[1]).not.toBeGreaterThan(first[1] + 0.0005);
+    }
+  });
+});
+
 // ========== Edge override tests ==========
 
 describe('findPbotPath with edge overrides', () => {
