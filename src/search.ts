@@ -28,6 +28,7 @@ export function setSearchBias(lat: number, lon: number, bbox?: string): void {
 }
 
 import type { HomeAddress } from './types';
+import { haversine } from './geo';
 
 export function initSearch(
   onSelectStart: (lat: number, lon: number, displayName: string) => void,
@@ -134,18 +135,35 @@ interface GeoResult {
 
 // ========== Forward geocoding (Photon, with Nominatim fallback) ==========
 
-/** Try Photon with bbox first, then Photon without bbox, then Nominatim unbounded. */
+/** Try Photon first, fall back to Nominatim, merge and deduplicate. */
 async function fetchGeoResults(query: string): Promise<GeoResult[]> {
-  // Phase 1: Photon constrained to viewport bbox (fast, local results)
+  // Phase 1: Photon with bbox (fast, local results)
   const local = await fetchPhoton(query, true);
   if (local.length > 0) return local;
 
-  // Phase 2: Photon with proximity bias only (can find results anywhere)
-  const wide = await fetchPhoton(query, false);
-  if (wide.length > 0) return wide;
+  // Phase 2: Photon wide + Nominatim bounded in parallel
+  const [wide, nominatim] = await Promise.all([
+    fetchPhoton(query, false),
+    fetchNominatim(query, true),
+  ]);
+  const merged = mergeGeoResults(wide, nominatim);
+  if (merged.length > 0) return merged.slice(0, 5);
 
   // Phase 3: Nominatim unbounded (final fallback)
   return fetchNominatim(query, false);
+}
+
+/** Merge two result lists, deduplicating by proximity (~100m). */
+function mergeGeoResults(a: GeoResult[], b: GeoResult[]): GeoResult[] {
+  const merged: GeoResult[] = [...a];
+  const DEDUP_THRESHOLD_M = 100;
+  for (const r of b) {
+    const isDupe = merged.some(
+      (m) => haversine([m.lat, m.lon], [r.lat, r.lon]) < DEDUP_THRESHOLD_M,
+    );
+    if (!isDupe) merged.push(r);
+  }
+  return merged;
 }
 
 async function fetchPhoton(query: string, useBbox = true): Promise<GeoResult[]> {
