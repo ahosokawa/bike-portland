@@ -1192,7 +1192,7 @@ function onNavUpdate(update: NavUpdate): void {
   const nextInst = update.nextInstruction;
   if (nextInst && !update.arrived) {
     $('nav-turn-icon').innerHTML = turnIconSvg(nextInst.icon);
-    $('nav-turn-distance').textContent = formatNavDist(update.distanceToNextTurn);
+    $('nav-turn-distance').textContent = formatDist(update.distanceToNextTurn, true);
     $('nav-turn-text').textContent = nextInst.text;
   } else if (update.arrived) {
     $('nav-turn-icon').innerHTML = turnIconSvg('arrive');
@@ -1226,19 +1226,12 @@ function onNavOffRoute(): void {
 
 // ========== Utilities ==========
 
-function formatDist(meters: number): string {
-  const feet = Math.round(meters * FEET_PER_METER);
+function formatDist(meters: number, nav = false): string {
+  if (nav && meters < 15) return 'Now';
+  const feet = meters * FEET_PER_METER;
   if (feet <= 500) return `${Math.round(feet / 10) * 10} ft`;
   const mi = meters / METERS_PER_MILE;
-  return `${mi.toFixed(1)} mi`;
-}
-
-function formatNavDist(meters: number): string {
-  if (meters < 15) return 'Now';
-  const feet = Math.round(meters * FEET_PER_METER);
-  if (feet <= 500) return `${Math.round(feet / 10) * 10} ft`;
-  const mi = meters / METERS_PER_MILE;
-  if (mi < 0.15) return `${Math.round(feet / 50) * 50} ft`;
+  if (nav && mi < 0.15) return `${Math.round(feet / 50) * 50} ft`;
   return `${mi.toFixed(1)} mi`;
 }
 

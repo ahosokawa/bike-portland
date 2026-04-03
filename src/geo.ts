@@ -69,23 +69,3 @@ export function pointToEdgeDist(p: [number, number], coords: [number, number][])
   return min;
 }
 
-/** Clean PBOT edge name for display in directions.
- *  Returns empty string if the name isn't useful for navigation. */
-export function cleanEdgeName(raw: string): string {
-  if (!raw) return '';
-  // Skip freeway names (I5 FWY SB, I205 FWY NB, etc.)
-  if (/\bI-?\d+\s*(FWY|HWY)/i.test(raw)) return '';
-  // Skip ramp names
-  if (/\bRAMP\b/i.test(raw)) return '';
-  // Simplify multi-use path names ("SE I205 MULTIUSE PATH" → "I-205 Path")
-  const mupMatch = raw.match(/I-?(\d+)\s*MULTI\s*USE\s*(PATH|TRAIL)/i);
-  if (mupMatch) return `I-${mupMatch[1]} Path`;
-  // Simplify Springwater
-  if (/SPRINGWATER\s+CORRIDOR/i.test(raw)) return 'Springwater Corridor';
-  // Title-case the name for readability (NE KLICKITAT ST → NE Klickitat ST)
-  const KEEP_UPPER = /^(NE|NW|SE|SW|N|S|E|W|US|OR|ST|AVE|BLVD|DR|RD|CT|PL|LN|HWY|PKWY|WAY|BRG|MUP)$/i;
-  return raw.replace(/\b\w+/g, (w) => {
-    if (KEEP_UPPER.test(w)) return w.toUpperCase();
-    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-  });
-}

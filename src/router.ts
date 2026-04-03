@@ -1,6 +1,6 @@
 import type { LatLng } from 'leaflet';
 import type { RouteResult, TurnInstruction, Waypoint, BRouterFeature } from './types';
-import { haversine as hav, computeDistance, bearing, cleanEdgeName } from './geo';
+import { haversine as hav, computeDistance, bearing } from './geo';
 import { findPbotPath } from './pbot-graph';
 import { getOverridesMap } from './edge-preferences';
 import type { PbotEdge, PbotPathResult } from './pbot-graph';
@@ -228,9 +228,29 @@ export async function computeRouteMulti(waypoints: Waypoint[], profileOverride?:
   return parseRouteFeature(feature);
 }
 
+// ========== PBOT edge name cleaning ==========
+
+/** Words that should stay fully uppercase in title-cased street names. */
+const KEEP_UPPER = /^(NE|NW|SE|SW|N|S|E|W|US|OR|ST|AVE|BLVD|DR|RD|CT|PL|LN|HWY|PKWY|WAY|BRG|MUP)$/i;
+
+/** Clean PBOT edge name for display in directions.
+ *  Returns empty string if the name isn't useful for navigation. */
+export function cleanEdgeName(raw: string): string {
+  if (!raw) return '';
+  if (/\bI-?\d+\s*(FWY|HWY)/i.test(raw)) return '';
+  if (/\bRAMP\b/i.test(raw)) return '';
+  const mupMatch = raw.match(/I-?(\d+)\s*MULTI\s*USE\s*(PATH|TRAIL)/i);
+  if (mupMatch) return `I-${mupMatch[1]} Path`;
+  if (/SPRINGWATER\s+CORRIDOR/i.test(raw)) return 'Springwater Corridor';
+  return raw.replace(/\b\w+/g, (w) => {
+    if (KEEP_UPPER.test(w)) return w.toUpperCase();
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  });
+}
+
 // ========== PBOT path → RouteResult ==========
 
-export function buildRouteFromPbotPath(path: PbotPathResult): RouteResult {
+function buildRouteFromPbotPath(path: PbotPathResult): RouteResult {
   // Concatenate edge coordinates, deduplicating shared junction points
   const coordinates: [number, number][] = [];
   for (const edge of path.edges) {

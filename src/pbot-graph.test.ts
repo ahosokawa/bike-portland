@@ -4,7 +4,23 @@ import { resolve } from 'path';
 import { buildGraph, findPbotPath, nk, canonicalEdgeKey, injectPolylineEdges } from './pbot-graph';
 import type { PbotPathResult } from './pbot-graph';
 import { indexBusyRoads } from './busy-roads';
-import { haversine, cleanEdgeName } from './geo';
+import { haversine } from './geo';
+
+// cleanEdgeName lives in router.ts but can't be imported here (Leaflet needs window).
+// Duplicated for testing — keep in sync with router.ts.
+const KEEP_UPPER = /^(NE|NW|SE|SW|N|S|E|W|US|OR|ST|AVE|BLVD|DR|RD|CT|PL|LN|HWY|PKWY|WAY|BRG|MUP)$/i;
+function cleanEdgeName(raw: string): string {
+  if (!raw) return '';
+  if (/\bI-?\d+\s*(FWY|HWY)/i.test(raw)) return '';
+  if (/\bRAMP\b/i.test(raw)) return '';
+  const mupMatch = raw.match(/I-?(\d+)\s*MULTI\s*USE\s*(PATH|TRAIL)/i);
+  if (mupMatch) return `I-${mupMatch[1]} Path`;
+  if (/SPRINGWATER\s+CORRIDOR/i.test(raw)) return 'Springwater Corridor';
+  return raw.replace(/\b\w+/g, (w) => {
+    if (KEEP_UPPER.test(w)) return w.toUpperCase();
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  });
+}
 
 // Load actual PBOT data for integration-style route tests
 beforeAll(() => {
