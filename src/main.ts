@@ -1227,7 +1227,8 @@ function onNavOffRoute(): void {
 // ========== Utilities ==========
 
 function formatDist(meters: number): string {
-  if (meters < 160) return `${Math.round(meters)} m`;
+  const feet = Math.round(meters * FEET_PER_METER);
+  if (feet <= 500) return `${Math.round(feet / 10) * 10} ft`;
   const mi = meters / METERS_PER_MILE;
   return `${mi.toFixed(1)} mi`;
 }

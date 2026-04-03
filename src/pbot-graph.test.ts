@@ -4,7 +4,7 @@ import { resolve } from 'path';
 import { buildGraph, findPbotPath, nk, canonicalEdgeKey, injectPolylineEdges } from './pbot-graph';
 import type { PbotPathResult } from './pbot-graph';
 import { indexBusyRoads } from './busy-roads';
-import { haversine } from './geo';
+import { haversine, cleanEdgeName } from './geo';
 
 // Load actual PBOT data for integration-style route tests
 beforeAll(() => {
@@ -129,6 +129,34 @@ describe('findPbotPath: Cook → Zoiglhaus', () => {
     const coords = flattenPath(path);
     expect(coords.some(c => c[0] > COOK_431.lat + 0.002)).toBe(false);
     expect(coords.some(c => c[1] < -122.680)).toBe(false);
+  });
+});
+
+// ========== I-205 PATH CONNECTION loop geometry ==========
+
+// The "I-205 PATH CONNECTION" edge has geometry that loops south then back north
+// (a switchback ramp). The A* path includes it, but router.ts trimLoopyEdges()
+// removes it so BRouter handles the exit cleanly via SE Ramona St.
+
+describe('findPbotPath: I-205 PATH CONNECTION edge', () => {
+  it('A* path includes the loopy PATH CONNECTION edge', () => {
+    const path = findPbotPath(
+      45.4860, -122.5686, // north of Zoiglhaus on I-205 MUP
+      ZOIGLHAUS.lat, ZOIGLHAUS.lng,
+    )!;
+    expect(path).not.toBeNull();
+
+    const pathConn = path.edges.find(e => e.name === 'I-205 PATH CONNECTION');
+    expect(pathConn).toBeDefined();
+
+    // Confirm it's loopy: distance >> straight-line
+    const straightLine = haversine(pathConn!.coords[0], pathConn!.coords[pathConn!.coords.length - 1]);
+    expect(pathConn!.distance).toBeGreaterThan(straightLine * 2.5);
+
+    // It should be the last edge, preceded by a gap edge
+    const lastIdx = path.edges.indexOf(pathConn!);
+    expect(lastIdx).toBe(path.edges.length - 1);
+    expect(path.edges[lastIdx - 1].ct).toMatch(/^_GAP/);
   });
 });
 
@@ -258,5 +286,78 @@ describe('findPbotPath with edge overrides', () => {
     // All edge keys should be unique
     const unique = new Set(edgeKeys);
     expect(unique.size).toBe(edgeKeys.length);
+  });
+});
+
+// ========== Instruction generation tests ==========
+
+describe('cleanEdgeName', () => {
+  it('should filter out freeway names', () => {
+    expect(cleanEdgeName('I5 FWY SB')).toBe('');
+    expect(cleanEdgeName('I205 FWY NB')).toBe('');
+    expect(cleanEdgeName('I84 FWY WB')).toBe('');
+    expect(cleanEdgeName('N I5 FWY-MARINE DR RAMP')).toBe('');
+  });
+
+  it('should filter out ramp names', () => {
+    expect(cleanEdgeName('SE HAWTHORNE BRG-HAWTHORNE BLVD RAMP')).toBe('');
+    expect(cleanEdgeName('SW I405 FWY-BROADWAY RAMP')).toBe('');
+  });
+
+  it('should simplify MUP names', () => {
+    expect(cleanEdgeName('SE I205 MULTIUSE PATH')).toBe('I-205 Path');
+    expect(cleanEdgeName('NE I205 MULTIUSE PATH')).toBe('I-205 Path');
+  });
+
+  it('should simplify Springwater', () => {
+    expect(cleanEdgeName('SE SPRINGWATER CORRIDOR MULTIUSE TRAIL')).toBe('Springwater Corridor');
+  });
+
+  it('should title-case street names with uppercase directional prefixes', () => {
+    const result = cleanEdgeName('NE KLICKITAT ST');
+    expect(result).toBe('NE Klickitat ST');
+  });
+
+  it('should keep directional prefixes uppercase', () => {
+    const result = cleanEdgeName('SE WHEELER AVE');
+    expect(result).toMatch(/^SE /);
+  });
+
+  it('should return empty for empty input', () => {
+    expect(cleanEdgeName('')).toBe('');
+  });
+});
+
+describe('cleanEdgeName filters PBOT edge names for Cook → Zoiglhaus', () => {
+  it('should clean all edge names without producing freeway/ramp references', () => {
+    const path = findPbotPath(COOK_431.lat, COOK_431.lng, ZOIGLHAUS.lat, ZOIGLHAUS.lng)!;
+    expect(path).not.toBeNull();
+
+    for (const edge of path.edges) {
+      const cleaned = cleanEdgeName(edge.name);
+      // No cleaned name should mention freeways or ramps
+      expect(cleaned).not.toMatch(/FWY|RAMP/i);
+    }
+  });
+
+  it('should produce at least some named edges for turn-by-turn directions', () => {
+    const path = findPbotPath(COOK_431.lat, COOK_431.lng, ZOIGLHAUS.lat, ZOIGLHAUS.lng)!;
+    const namedEdges = path.edges.filter(e => cleanEdgeName(e.name) !== '');
+    // Route should have meaningful names on a significant portion of edges
+    expect(namedEdges.length).toBeGreaterThan(5);
+  });
+
+  it('should produce properly cased names with uppercase directional prefixes', () => {
+    const path = findPbotPath(COOK_431.lat, COOK_431.lng, ZOIGLHAUS.lat, ZOIGLHAUS.lng)!;
+    for (const edge of path.edges) {
+      const cleaned = cleanEdgeName(edge.name);
+      if (!cleaned) continue;
+      // Simplified names (Springwater Corridor, I-205 Path) don't keep prefixes
+      if (cleaned === 'Springwater Corridor' || cleaned.match(/^I-\d+ Path$/)) continue;
+      // Regular street names: directional prefixes should be uppercase
+      if (/^(NE|NW|SE|SW|N|S|E|W) /.test(edge.name)) {
+        expect(cleaned).toMatch(/^(NE|NW|SE|SW|N|S|E|W) /);
+      }
+    }
   });
 });

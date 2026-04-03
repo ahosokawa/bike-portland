@@ -1,6 +1,6 @@
 import type { LatLng } from 'leaflet';
 import type { RouteResult, TurnInstruction, Waypoint, BRouterFeature } from './types';
-import { haversine as hav, computeDistance, bearing } from './geo';
+import { haversine as hav, computeDistance, bearing, cleanEdgeName } from './geo';
 import { findPbotPath } from './pbot-graph';
 import { getOverridesMap } from './edge-preferences';
 import type { PbotEdge, PbotPathResult } from './pbot-graph';
@@ -109,6 +109,11 @@ export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<Ro
     return computeRoute(start, end);
   }
 
+  // Trim trailing (and leading) edges whose geometry loops back on itself
+  // (e.g. switchback ramps in the I-205 corridor). BRouter handles the
+  // last/first mile from the trimmed endpoint much more cleanly.
+  trimLoopyEdges(pbotPath);
+
   // Replace straight-line gap edges with real road geometry from BRouter
   await resolveGapEdges(pbotPath.edges);
 
@@ -130,6 +135,51 @@ export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<Ro
   ]);
 
   return stitchRoutes(start, end, firstMile, pbotRoute, lastMile);
+}
+
+/**
+ * Remove trailing/leading edges with geometry that loops back on itself
+ * (path length >> straight-line distance). These occur at MUP ramp connections
+ * where PBOT geometry doubles back. Trimming them lets BRouter handle the
+ * last/first mile from a cleaner anchor point on the main path.
+ *
+ * Also removes gap edges adjacent to a trimmed loopy edge, since they
+ * connect to the same awkward corridor location.
+ */
+function trimLoopyEdges(path: PbotPathResult): void {
+  const LOOP_RATIO = 2.5;
+
+  function isLoopy(edge: PbotEdge): boolean {
+    if (edge.coords.length <= 2) return false;
+    const straight = hav(edge.coords[0], edge.coords[edge.coords.length - 1]);
+    return edge.distance > straight * LOOP_RATIO;
+  }
+
+  // Trim from the end — only remove loopy edges (keep gap edges so the
+  // endpoint stays close to the actual path exit)
+  let trimmed = false;
+  while (path.edges.length > 1 && isLoopy(path.edges[path.edges.length - 1])) {
+    path.edges.pop();
+    trimmed = true;
+  }
+  if (trimmed) {
+    const last = path.edges[path.edges.length - 1];
+    const c = last.coords[last.coords.length - 1];
+    path.endNode = { lat: c[0], lng: c[1] };
+    path.endSnapDist = SNAP_THRESHOLD + 1; // force BRouter last mile
+  }
+
+  // Trim from the start
+  trimmed = false;
+  while (path.edges.length > 1 && isLoopy(path.edges[0])) {
+    path.edges.shift();
+    trimmed = true;
+  }
+  if (trimmed) {
+    const first = path.edges[0];
+    path.startNode = { lat: first.coords[0][0], lng: first.coords[0][1] };
+    path.startSnapDist = SNAP_THRESHOLD + 1;
+  }
 }
 
 /** Replace straight-line gap-bridge edge coords with real road geometry. */
@@ -180,7 +230,7 @@ export async function computeRouteMulti(waypoints: Waypoint[], profileOverride?:
 
 // ========== PBOT path → RouteResult ==========
 
-function buildRouteFromPbotPath(path: PbotPathResult): RouteResult {
+export function buildRouteFromPbotPath(path: PbotPathResult): RouteResult {
   // Concatenate edge coordinates, deduplicating shared junction points
   const coordinates: [number, number][] = [];
   for (const edge of path.edges) {
@@ -203,44 +253,52 @@ function generatePbotInstructions(edges: PbotEdge[], coordinates: [number, numbe
 
   const instructions: TurnInstruction[] = [];
   let cumulativeDist = 0;
+  let stepDist = 0; // distance accumulated since the last emitted instruction
 
-  // Start instruction
+  const startName = cleanEdgeName(edges[0].name);
   instructions.push({
-    text: edges[0].name ? `Start on ${edges[0].name}` : 'Start your ride',
+    text: startName ? `Start on ${startName}` : 'Start your ride',
     distance: 0,
     stepDistance: 0,
     icon: 'start',
     latlng: coordinates[0],
   });
 
-  // Turn instructions at edge transitions where the street name changes
+  // Track the "effective" previous name for merging consecutive edges
+  let prevEffectiveName = startName;
+
   for (let i = 1; i < edges.length; i++) {
     cumulativeDist += edges[i - 1].distance;
-    const prev = edges[i - 1];
+    stepDist += edges[i - 1].distance;
     const cur = edges[i];
+    const curName = cleanEdgeName(cur.name);
 
-    // Only emit an instruction when the name changes (or either name is empty)
-    if (cur.name && cur.name === prev.name) continue;
+    // Skip if the cleaned name hasn't changed
+    if (curName && curName === prevEffectiveName) continue;
 
-    const turnType = computeTurnType(prev, cur);
-    const text = cur.name
-      ? `${turnType} onto ${cur.name}`
-      : `${turnType}`;
+    // Skip edges without a useful name — don't emit bare "Turn left" / "Continue"
+    if (!curName) continue;
 
+    const turnType = computeTurnType(edges[i - 1], cur);
     instructions.push({
-      text,
+      text: `${turnType} onto ${curName}`,
       distance: cumulativeDist,
-      stepDistance: edges[i - 1].distance,
+      stepDistance: stepDist,
       icon: turnTypeIcon(turnType),
       latlng: cur.coords[0],
     });
+
+    prevEffectiveName = curName;
+    stepDist = 0;
   }
 
-  // Arrive instruction
+  // Account for remaining edges after last instruction
+  stepDist += edges[edges.length - 1].distance;
+
   instructions.push({
     text: 'Arrive at destination',
     distance: totalDistance,
-    stepDistance: 0,
+    stepDistance: stepDist,
     icon: 'arrive',
     latlng: coordinates[coordinates.length - 1],
   });
@@ -304,8 +362,12 @@ function stitchRoutes(
     descend += firstMile.descend;
   } else {
     // Direct line from start to first PBOT coord
-    coordinates.push([start.lat, start.lng]);
+    const startCoord: [number, number] = [start.lat, start.lng];
+    coordinates.push(startCoord);
     elevations.push(0);
+    const firstPbotCoord = pbotRoute.coordinates[0];
+    const startGap = firstPbotCoord ? hav(startCoord, firstPbotCoord) : 0;
+    distance += startGap;
   }
 
   // PBOT core (skip first coordinate if it's a duplicate of the last first-mile point)
@@ -344,16 +406,25 @@ function stitchRoutes(
     distance += lastMile.distance;
     ascend += lastMile.ascend;
     descend += lastMile.descend;
-  } else if (pbotRoute.instructions.length > 0) {
+  } else {
+    // No BRouter last mile — add a straight-line segment from PBOT exit to destination
+    const endCoord: [number, number] = [end.lat, end.lng];
+    const lastPbotCoord = coordinates[coordinates.length - 1];
+    const gapDist = lastPbotCoord ? hav(lastPbotCoord, endCoord) : 0;
+    if (gapDist > 5) {
+      coordinates.push(endCoord);
+      elevations.push(0);
+      distance += gapDist;
+    }
     // Ensure we have an arrive instruction
     const last = instructions[instructions.length - 1];
     if (!last || !last.text.toLowerCase().includes('arrive')) {
       instructions.push({
         text: 'Arrive at destination',
         distance,
-        stepDistance: 0,
+        stepDistance: gapDist,
         icon: 'arrive',
-        latlng: coordinates[coordinates.length - 1],
+        latlng: endCoord,
       });
     }
   }
