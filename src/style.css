@@ -4,11 +4,31 @@
   box-sizing: border-box;
 }
 
-html, body, #app {
+html, body {
   height: 100%;
   width: 100%;
+  margin: 0;
+  padding: 0;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+#safe-area-top {
+  height: env(safe-area-inset-top);
+  background: white;
+  flex-shrink: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#app {
+  flex: 1;
+  width: 100%;
+  overflow: hidden;
+  position: relative;
 }
 
 /* iOS standalone PWA: fill the full screen including behind safe areas */
@@ -1303,6 +1323,10 @@ body.navigating #layers-backdrop,
 body.navigating #builder-toolbar,
 body.navigating #saved-routes-panel {
   display: none !important;
+}
+
+body.navigating #safe-area-top {
+  background: #1a1a2e;
 }
 
 /* Smooth map rotation during navigation */
