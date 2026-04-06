@@ -13,6 +13,7 @@ import {
   clearUserPosition,
   setPlanningMarkersVisible,
   resetMapBearing,
+  invalidateMapSize,
 } from './map';
 import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile, detectBacktracking } from './router';
 import { classifyRoute } from './pbot-graph';
@@ -1167,6 +1168,8 @@ function handleStartNav(): void {
   }
 
   document.body.classList.add('navigating');
+  // Leaflet needs to know the map container is now oversized
+  invalidateMapSize();
   $('nav-hud').classList.remove('hidden');
   setPlanningMarkersVisible(false);
   followUser = true;
@@ -1178,6 +1181,8 @@ function handleStopNav(): void {
   stopNavigation();
   resetMapBearing();
   document.body.classList.remove('navigating');
+  // Leaflet needs to know the map container is back to normal size
+  invalidateMapSize();
   $('nav-hud').classList.add('hidden');
   $('nav-off-route').classList.add('hidden');
   clearUserPosition();

@@ -170,20 +170,18 @@ export function clearEndMarker(): void {
 /** Rotate the map to match the user's heading (north-up → heading-up) */
 export function setMapBearing(bearing: number): void {
   const container = map.getContainer();
-  container.style.transform = `rotate(${-bearing}deg) scale(1.2)`;
-
-  // Counter-rotate zoom control so it stays upright
-  const zoomCtrl = container.querySelector('.leaflet-control-zoom') as HTMLElement | null;
-  if (zoomCtrl) zoomCtrl.style.transform = `rotate(${bearing}deg)`;
+  container.style.transform = `rotate(${-bearing}deg)`;
 }
 
 /** Reset map rotation to north-up */
 export function resetMapBearing(): void {
   const container = map.getContainer();
   container.style.transform = '';
+}
 
-  const zoomCtrl = container.querySelector('.leaflet-control-zoom') as HTMLElement | null;
-  if (zoomCtrl) zoomCtrl.style.transform = '';
+/** Tell Leaflet to re-measure its container (call after resize/nav mode change) */
+export function invalidateMapSize(): void {
+  map.invalidateSize({ animate: false });
 }
 
 /**
