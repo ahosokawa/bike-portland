@@ -2,7 +2,7 @@ import L from 'leaflet';
 
 const PORTLAND_CENTER: [number, number] = [45.523064, -122.676483];
 const DEFAULT_ZOOM = 13;
-const NAV_ZOOM = 17;
+const NAV_ZOOM = 18;
 
 let map: L.Map;
 let startMarker: L.Marker | null = null;
@@ -167,6 +167,37 @@ export function clearEndMarker(): void {
   }
 }
 
+/** Rotate the map to match the user's heading (north-up → heading-up) */
+export function setMapBearing(bearing: number): void {
+  const container = map.getContainer();
+  container.style.transform = `rotate(${-bearing}deg) scale(1.2)`;
+
+  // Counter-rotate zoom control so it stays upright
+  const zoomCtrl = container.querySelector('.leaflet-control-zoom') as HTMLElement | null;
+  if (zoomCtrl) zoomCtrl.style.transform = `rotate(${bearing}deg)`;
+}
+
+/** Reset map rotation to north-up */
+export function resetMapBearing(): void {
+  const container = map.getContainer();
+  container.style.transform = '';
+
+  const zoomCtrl = container.querySelector('.leaflet-control-zoom') as HTMLElement | null;
+  if (zoomCtrl) zoomCtrl.style.transform = '';
+}
+
+/**
+ * Compute a center point offset ahead of the user in the direction of travel,
+ * so the user dot sits in the lower third and more of the route ahead is visible.
+ */
+function offsetCenter(lat: number, lng: number, heading: number): L.LatLng {
+  const offsetMeters = 120;
+  const headingRad = heading * Math.PI / 180;
+  const dLat = (offsetMeters / 111320) * Math.cos(headingRad);
+  const dLng = (offsetMeters / (111320 * Math.cos(lat * Math.PI / 180))) * Math.sin(headingRad);
+  return L.latLng(lat + dLat, lng + dLng);
+}
+
 /** Update user's live position on the map during navigation */
 export function updateUserPosition(
   lat: number,
@@ -205,7 +236,12 @@ export function updateUserPosition(
   }
 
   if (followUser) {
-    map.setView(latlng, Math.max(map.getZoom(), NAV_ZOOM), { animate: true });
+    const center = heading !== null ? offsetCenter(lat, lng, heading) : latlng;
+    map.setView(center, Math.max(map.getZoom(), NAV_ZOOM), { animate: true });
+
+    if (heading !== null) {
+      setMapBearing(heading);
+    }
   }
 }
 

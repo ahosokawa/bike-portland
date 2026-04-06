@@ -12,6 +12,7 @@ import {
   updateUserPosition,
   clearUserPosition,
   setPlanningMarkersVisible,
+  resetMapBearing,
 } from './map';
 import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile, detectBacktracking } from './router';
 import { classifyRoute } from './pbot-graph';
@@ -213,7 +214,10 @@ function init(): void {
 
   // During nav, let user drag map to explore, but tap to re-center
   map.on('dragstart', () => {
-    if (isNavigating()) followUser = false;
+    if (isNavigating()) {
+      followUser = false;
+      resetMapBearing();
+    }
   });
   map.on('click', () => {
     if (isNavigating()) followUser = true;
@@ -1157,6 +1161,11 @@ function handleStartNav(): void {
     speechSynthesis.speak(unlock);
   }
 
+  // Blur any focused input so iOS "shake to undo" doesn't trigger while riding
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
+
   document.body.classList.add('navigating');
   $('nav-hud').classList.remove('hidden');
   setPlanningMarkersVisible(false);
@@ -1167,6 +1176,7 @@ function handleStartNav(): void {
 
 function handleStopNav(): void {
   stopNavigation();
+  resetMapBearing();
   document.body.classList.remove('navigating');
   $('nav-hud').classList.add('hidden');
   $('nav-off-route').classList.add('hidden');
