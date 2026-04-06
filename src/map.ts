@@ -45,8 +45,6 @@ export function initMap(): L.Map {
     maxZoom: 19,
   }).addTo(map);
 
-  L.control.zoom({ position: 'topright' }).addTo(map);
-
   return map;
 }
 
