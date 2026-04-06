@@ -52,6 +52,8 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,png,geojson}'],
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024, // 6MB for PBOT geojson
+        skipWaiting: true,
+        clientsClaim: true,
         navigateFallbackDenylist: [/^\/bike-portland\/info/],
         runtimeCaching: [
           {
