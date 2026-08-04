@@ -23,7 +23,49 @@ export interface NavUpdate {
 
 export type NavCallback = (update: NavUpdate) => void;
 
-let watchId: number | null = null;
+/** A single position fix, GPS or simulated. */
+export interface NavPosition {
+  lat: number;
+  lng: number;
+  heading: number | null; // degrees, null if unknown/stationary
+  accuracy: number;       // meters
+}
+
+/** Feeds position fixes to the navigation engine. Real GPS or a simulator. */
+export interface PositionSource {
+  start(onPosition: (pos: NavPosition) => void): void;
+  stop(): void;
+}
+
+/** Default source: browser geolocation watch. */
+class GeolocationSource implements PositionSource {
+  private watchId: number | null = null;
+
+  start(onPosition: (pos: NavPosition) => void): void {
+    if (!navigator.geolocation) {
+      throw new Error('Geolocation not supported');
+    }
+    this.watchId = navigator.geolocation.watchPosition(
+      (pos) => onPosition({
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        heading: pos.coords.heading !== null && !isNaN(pos.coords.heading) ? pos.coords.heading : null,
+        accuracy: pos.coords.accuracy,
+      }),
+      (err) => console.warn('GPS error:', err.message),
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 },
+    );
+  }
+
+  stop(): void {
+    if (this.watchId !== null) {
+      navigator.geolocation.clearWatch(this.watchId);
+      this.watchId = null;
+    }
+  }
+}
+
+let positionSource: PositionSource | null = null;
 let wakeLock: WakeLockSentinel | null = null;
 let visibilityHandler: (() => void) | null = null;
 let route: RouteResult | null = null;
@@ -32,6 +74,7 @@ let onOffRoute: (() => void) | null = null;
 let lastAnnouncedIndex = -1;
 let lastAnnounceTime = 0;
 let arrived = false;
+let lastPosition: NavPosition | null = null;
 
 // Precomputed cumulative distances along route polyline
 let segmentCumDist: number[] = [];
@@ -41,6 +84,7 @@ export function startNavigation(
   routeData: RouteResult,
   callback: NavCallback,
   offRouteCallback?: () => void,
+  source?: PositionSource,
 ): void {
   route = routeData;
   onUpdate = callback;
@@ -61,48 +105,64 @@ export function startNavigation(
   // Request wake lock
   acquireWakeLock();
 
-  // Start GPS tracking
-  if (!navigator.geolocation) {
-    throw new Error('Geolocation not supported');
-  }
-
-  watchId = navigator.geolocation.watchPosition(
-    handlePosition,
-    handleError,
-    {
-      enableHighAccuracy: true,
-      maximumAge: 2000,
-      timeout: 10000,
-    },
-  );
+  positionSource = source ?? new GeolocationSource();
+  positionSource.start(handlePosition);
 
   // Announce start
   speak('Navigation started. ' + route.instructions[0]?.text || 'Follow the route.');
 }
 
 export function stopNavigation(): void {
-  if (watchId !== null) {
-    navigator.geolocation.clearWatch(watchId);
-    watchId = null;
+  if (positionSource) {
+    positionSource.stop();
+    positionSource = null;
   }
   releaseWakeLock();
   route = null;
   onUpdate = null;
   onOffRoute = null;
   arrived = false;
+  lastPosition = null;
+}
+
+/**
+ * Swap in a new route mid-navigation (rerouting). Keeps the position source
+ * running; resets snap/announcement state so guidance follows the new route.
+ */
+export function updateRoute(newRoute: RouteResult): void {
+  if (!positionSource) return;
+  route = newRoute;
+  lastAnnouncedIndex = -1;
+  lastAnnounceTime = 0;
+  arrived = false;
+  lastSnapIndex = 0;
+  segmentCumDist = [0];
+  for (let i = 1; i < newRoute.coordinates.length; i++) {
+    segmentCumDist.push(
+      segmentCumDist[i - 1] + haversine(newRoute.coordinates[i - 1], newRoute.coordinates[i])
+    );
+  }
+}
+
+/** Last position fix received during navigation (null when not navigating). */
+export function getLastPosition(): NavPosition | null {
+  return lastPosition;
+}
+
+/** Speak an announcement through the navigation voice (no-op outside browsers). */
+export function announce(text: string): void {
+  speak(text);
 }
 
 export function isNavigating(): boolean {
-  return watchId !== null;
+  return positionSource !== null;
 }
 
-function handlePosition(pos: GeolocationPosition): void {
+function handlePosition(pos: NavPosition): void {
   if (!route || !onUpdate) return;
+  lastPosition = pos;
 
-  const userLat = pos.coords.latitude;
-  const userLng = pos.coords.longitude;
-  const heading = pos.coords.heading; // null if stationary
-  const accuracy = pos.coords.accuracy;
+  const { lat: userLat, lng: userLng, heading, accuracy } = pos;
 
   // Find closest point on route
   const snap = snapToRoute(userLat, userLng);
@@ -140,7 +200,7 @@ function handlePosition(pos: GeolocationPosition): void {
   onUpdate({
     userLat,
     userLng,
-    heading: heading !== null && !isNaN(heading) ? heading : null,
+    heading,
     accuracy,
     currentInstruction,
     nextInstruction,
@@ -151,10 +211,6 @@ function handlePosition(pos: GeolocationPosition): void {
     offRoute,
     arrived,
   });
-}
-
-function handleError(err: GeolocationPositionError): void {
-  console.warn('GPS error:', err.message);
 }
 
 interface SnapResult {
@@ -276,7 +332,7 @@ function formatVoiceDistance(meters: number): string {
 }
 
 function speak(text: string): void {
-  if (!('speechSynthesis' in window)) return;
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
 
   // Cancel any pending speech
   speechSynthesis.cancel();

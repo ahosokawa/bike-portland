@@ -97,7 +97,7 @@ const TIER_COLORS: Record<InfraTier, string> = {
   none:    '#9e9e9e', // gray — no bike infrastructure data
 };
 
-export function displayRoute(coords: [number, number][], tiers?: InfraTier[]): void {
+export function displayRoute(coords: [number, number][], tiers?: InfraTier[], fitView = true): void {
   clearRoute();
 
   if (tiers && tiers.length === coords.length) {
@@ -127,7 +127,7 @@ export function displayRoute(coords: [number, number][], tiers?: InfraTier[]): v
     routeLines.push(line);
   }
 
-  if (routeLines.length > 0) {
+  if (fitView && routeLines.length > 0) {
     const group = L.featureGroup(routeLines);
     map.fitBounds(group.getBounds(), { padding: [60, 60] });
   }
@@ -138,6 +138,49 @@ export function clearRoute(): void {
     map.removeLayer(line);
   }
   routeLines = [];
+  clearDebugOverlay();
+}
+
+// ========== Dev debug overlay (?debug=1) ==========
+
+import type { RouteDebugInfo } from './types';
+
+let debugLayers: L.Layer[] = [];
+
+/** Draw route internals: gap-edge geometry (dashed magenta) and stitch points. */
+export function displayDebugOverlay(debug: RouteDebugInfo): void {
+  clearDebugOverlay();
+
+  for (const seg of debug.gapSegments) {
+    if (seg.length < 2) continue;
+    const line = L.polyline(seg, {
+      color: '#e040fb',
+      weight: 3,
+      opacity: 0.9,
+      dashArray: '6 6',
+    }).addTo(map);
+    line.bindTooltip('gap edge', { sticky: true });
+    debugLayers.push(line);
+  }
+
+  for (const sp of debug.stitchPoints) {
+    const marker = L.circleMarker(sp.latlng, {
+      radius: 8,
+      color: '#e040fb',
+      fillColor: '#fff',
+      fillOpacity: 0.9,
+      weight: 3,
+    }).addTo(map);
+    marker.bindTooltip(sp.label);
+    debugLayers.push(marker);
+  }
+}
+
+export function clearDebugOverlay(): void {
+  for (const layer of debugLayers) {
+    map.removeLayer(layer);
+  }
+  debugLayers = [];
 }
 
 export function clearMarkers(): void {

@@ -9,6 +9,22 @@ export interface RouteResult {
   descend: number; // total meters descended
   hasElevation: boolean; // true if elevation data is real (BRouter), false if unavailable (PBOT-only)
   instructions: TurnInstruction[];
+  debug?: RouteDebugInfo; // populated for dev inspection (?debug=1)
+}
+
+/** Internals of how a route was assembled, for the dev debug overlay. */
+export interface RouteDebugInfo {
+  source: 'pbot+brouter' | 'brouter';
+  /** PBOT network entry/exit where BRouter segments are stitched on. */
+  stitchPoints: { label: string; latlng: [number, number] }[];
+  /** Geometry of synthetic gap/preference edges (after BRouter resolution). */
+  gapSegments: [number, number][][];
+  /**
+   * Coordinate indices where independently computed sections join
+   * (first-mile→core, core→last-mile). coords[i-1] and coords[i] at each
+   * index i come from different sources and must be adjacent on the ground.
+   */
+  sectionBoundaries: number[];
 }
 
 export interface TurnInstruction {
@@ -48,16 +64,6 @@ export interface SavedRoute {
   cachedRoute?: RouteResult; // full computed route for offline use
   createdAt: number;
   updatedAt: number;
-}
-
-export interface EdgePreference {
-  edgeKey: string;              // canonical edge key (DB primary key) — for single-edge prefs
-  type: 'preferred' | 'nogo';
-  name: string;
-  coords: [number, number][][]; // array of [lat, lng][] polylines (one per sub-edge)
-  createdAt: number;
-  groupId?: string;             // links multi-edge custom segments (all edges share one groupId)
-  allEdgeKeys?: string[];       // all edge keys in the group (only set on custom segments)
 }
 
 export interface HomeAddress {

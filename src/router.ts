@@ -2,7 +2,6 @@ import type { LatLng } from 'leaflet';
 import type { RouteResult, TurnInstruction, Waypoint, BRouterFeature } from './types';
 import { haversine as hav, computeDistance, bearing } from './geo';
 import { findPbotPath } from './pbot-graph';
-import { getOverridesMap } from './edge-preferences';
 import type { PbotEdge, PbotPathResult } from './pbot-graph';
 
 const BROUTER_URL = 'https://brouter.de/brouter';
@@ -31,8 +30,10 @@ export function getRouteProfile(): RouteProfileKey {
 
 // ========== Shared fetch + parse ==========
 
-async function fetchRoute(lonlats: string, profileOverride?: string): Promise<BRouterFeature> {
-  const profile = profileOverride || ROUTE_PROFILES[currentProfile].profile;
+/** Low-level BRouter request. Swappable via setBRouterFetcher for tests/fixtures. */
+export type BRouterFetcher = (lonlats: string, profile: string) => Promise<BRouterFeature>;
+
+export const httpBRouterFetcher: BRouterFetcher = async (lonlats, profile) => {
   const params = new URLSearchParams({
     lonlats,
     profile,
@@ -51,6 +52,18 @@ async function fetchRoute(lonlats: string, profileOverride?: string): Promise<BR
     throw new Error('No route found');
   }
   return feature;
+};
+
+let brouterFetcher: BRouterFetcher = httpBRouterFetcher;
+
+/** Replace the BRouter transport (pass null to restore the real HTTP fetcher). */
+export function setBRouterFetcher(fetcher: BRouterFetcher | null): void {
+  brouterFetcher = fetcher ?? httpBRouterFetcher;
+}
+
+async function fetchRoute(lonlats: string, profileOverride?: string): Promise<BRouterFeature> {
+  const profile = profileOverride || ROUTE_PROFILES[currentProfile].profile;
+  return brouterFetcher(lonlats, profile);
 }
 
 function parseRouteFeature(feature: BRouterFeature): RouteResult {
@@ -63,10 +76,10 @@ function parseRouteFeature(feature: BRouterFeature): RouteResult {
   );
 
   const props = feature.properties;
-  const distance = parseFloat(props['track-length']) || computeDistance(coords);
-  const time = parseFloat(props['total-time']) || Math.round(distance / 4.2);
-  const ascend = parseFloat(props['filtered ascend']) || 0;
-  const descend = parseFloat(props['filtered descend']) || 0;
+  const distance = parseFloat(props['track-length'] ?? '') || computeDistance(coords);
+  const time = parseFloat(props['total-time'] ?? '') || Math.round(distance / 4.2);
+  const ascend = parseFloat(props['filtered ascend'] ?? '') || 0;
+  const descend = parseFloat(props['filtered descend'] ?? '') || 0;
 
   const instructions = parseInstructions(feature);
 
@@ -100,13 +113,16 @@ export async function fetchRoadGeometry(
 export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<RouteResult> {
   // "Direct" mode — pure BRouter, no PBOT guidance
   if (currentProfile !== 'safest') {
-    return computeRoute(start, end);
+    const route = await computeRoute(start, end);
+    route.debug = { source: 'brouter', stitchPoints: [], gapSegments: [], sectionBoundaries: [] };
+    return route;
   }
 
-  const overrides = getOverridesMap();
-  const pbotPath = findPbotPath(start.lat, start.lng, end.lat, end.lng, 'safest', overrides);
+  const pbotPath = findPbotPath(start.lat, start.lng, end.lat, end.lng, 'safest');
   if (!pbotPath) {
-    return computeRoute(start, end);
+    const route = await computeRoute(start, end);
+    route.debug = { source: 'brouter', stitchPoints: [], gapSegments: [], sectionBoundaries: [] };
+    return route;
   }
 
   // Trim trailing (and leading) edges whose geometry loops back on itself
@@ -134,7 +150,13 @@ export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<Ro
       : null,
   ]);
 
-  return stitchRoutes(start, end, firstMile, pbotRoute, lastMile);
+  const stitched = stitchRoutes(start, end, firstMile, pbotRoute, lastMile);
+  stitched.debug!.stitchPoints = [
+    { label: firstMile ? 'PBOT entry (BRouter first mile ends)' : 'PBOT entry (direct)', latlng: [pbotPath.startNode.lat, pbotPath.startNode.lng] },
+    { label: lastMile ? 'PBOT exit (BRouter last mile starts)' : 'PBOT exit (direct)', latlng: [pbotPath.endNode.lat, pbotPath.endNode.lng] },
+  ];
+  stitched.debug!.gapSegments = pbotPath.edges.filter(e => e.ct.startsWith('_')).map(e => e.coords);
+  return stitched;
 }
 
 /**
@@ -185,7 +207,7 @@ function trimLoopyEdges(path: PbotPathResult): void {
 /** Replace straight-line gap-bridge edge coords with real road geometry. */
 async function resolveGapEdges(edges: PbotEdge[]): Promise<void> {
   const gapIndices = edges
-    .map((e, i) => e.ct.startsWith('_GAP') || e.ct === '_PREF' ? i : -1)
+    .map((e, i) => e.ct.startsWith('_GAP') ? i : -1)
     .filter(i => i >= 0);
 
   if (gapIndices.length === 0) return;
@@ -368,6 +390,7 @@ function stitchRoutes(
   const coordinates: [number, number][] = [];
   const elevations: number[] = [];
   const instructions: TurnInstruction[] = [];
+  const sectionBoundaries: number[] = [];
   let distance = 0;
   let ascend = 0;
   let descend = 0;
@@ -390,8 +413,15 @@ function stitchRoutes(
     distance += startGap;
   }
 
-  // PBOT core (skip first coordinate if it's a duplicate of the last first-mile point)
-  const pbotStart = pbotRoute.coordinates.length > 0 ? 1 : 0;
+  // PBOT core — skip its first coordinate only if it actually duplicates the
+  // previous point. BRouter snaps its endpoint to the nearest OSM way, which
+  // can sit tens of meters from the PBOT node; dropping the node in that case
+  // widens the visual disconnect at the junction.
+  if (firstMile) sectionBoundaries.push(coordinates.length);
+  const prevCoord = coordinates[coordinates.length - 1];
+  const pbotStart =
+    pbotRoute.coordinates.length > 0 && prevCoord && hav(prevCoord, pbotRoute.coordinates[0]) < 5
+      ? 1 : 0;
   for (let i = pbotStart; i < pbotRoute.coordinates.length; i++) {
     coordinates.push(pbotRoute.coordinates[i]);
     elevations.push(0);
@@ -410,7 +440,12 @@ function stitchRoutes(
 
   // Last mile (BRouter: PBOT network exit → end)
   if (lastMile) {
-    const lastStart = lastMile.coordinates.length > 0 ? 1 : 0;
+    sectionBoundaries.push(coordinates.length);
+    // Same dedupe rule as the first-mile→core junction above
+    const lastPrev = coordinates[coordinates.length - 1];
+    const lastStart =
+      lastMile.coordinates.length > 0 && lastPrev && hav(lastPrev, lastMile.coordinates[0]) < 5
+        ? 1 : 0;
     for (let i = lastStart; i < lastMile.coordinates.length; i++) {
       coordinates.push(lastMile.coordinates[i]);
       elevations.push(lastMile.elevations[i] ?? 0);
@@ -450,7 +485,10 @@ function stitchRoutes(
   }
 
   const time = Math.round(distance / 4.2);
-  return { coordinates, distance, time, elevations, ascend, descend, hasElevation: false, instructions };
+  return {
+    coordinates, distance, time, elevations, ascend, descend, hasElevation: false, instructions,
+    debug: { source: 'pbot+brouter', stitchPoints: [], gapSegments: [], sectionBoundaries },
+  };
 }
 
 // ========== Instructions parsing (BRouter) ==========
@@ -499,7 +537,7 @@ function parseInstructions(feature: BRouterFeature): TurnInstruction[] {
       const endCoord = feature.geometry.coordinates[feature.geometry.coordinates.length - 1];
       instructions.push({
         text: 'Arrive at destination',
-        distance: parseFloat(feature.properties?.['track-length']) || cumulativeDist,
+        distance: parseFloat(feature.properties?.['track-length'] ?? '') || cumulativeDist,
         stepDistance: 0,
         icon: 'arrive',
         latlng: [endCoord[1], endCoord[0]],
@@ -514,7 +552,7 @@ function generateBasicInstructions(feature: BRouterFeature): TurnInstruction[] {
   const coords = feature.geometry.coordinates;
   if (!coords || coords.length < 2) return [];
 
-  const totalDist = parseFloat(feature.properties?.['track-length']) || 0;
+  const totalDist = parseFloat(feature.properties?.['track-length'] ?? '') || 0;
   const start = coords[0];
   const end = coords[coords.length - 1];
   return [

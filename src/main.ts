@@ -14,31 +14,17 @@ import {
   setPlanningMarkersVisible,
   resetMapBearing,
   invalidateMapSize,
+  displayDebugOverlay,
 } from './map';
+import { RideSimulator, mountSimulatorControls } from './ride-simulator';
 import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile, detectBacktracking } from './router';
 import { classifyRoute } from './pbot-graph';
 import type { RouteProfileKey } from './router';
 import { initSearch, reverseGeocode, setSearchBias } from './search';
 import { getCurrentPosition } from './geolocation';
 import { drawElevationProfile } from './elevation';
-import { loadPbotData, togglePbotLayer, getPbotLayer, showPbotLayer, hidePbotLayer, isPbotLayerVisible } from './pbot-layer';
-import { nk, canonicalEdgeKey, injectPolylineEdges } from './pbot-graph';
-import {
-  loadPreferences,
-  initPreferencesLayer,
-  showPreferencesLayer,
-  hidePreferencesLayer,
-  onPreferenceRemoved,
-  injectPreferenceEdges,
-  setPreference,
-  setPreferenceGroup,
-  removePreference,
-  getPreferences,
-  getUniquePreferences,
-} from './edge-preferences';
-import { fetchRoadGeometry } from './router';
-import type { EdgePreference } from './types';
-import { startNavigation, stopNavigation, isNavigating } from './navigation';
+import { loadPbotData, togglePbotLayer } from './pbot-layer';
+import { startNavigation, stopNavigation, isNavigating, updateRoute, announce } from './navigation';
 import {
   enterBuilderMode,
   exitBuilderMode,
@@ -62,21 +48,27 @@ const state: AppState = {
   route: null,
 };
 
+// Dev tooling flags (see README "Dev tools" / Phase 0 test harness):
+//   ?from=lat,lng&to=lat,lng[&profile=safest|balanced] — load a route on startup
+//   ?sim=1  — navigation uses a fake-GPS ride simulator instead of real GPS
+//   ?sim=auto — same, and navigation auto-starts once the URL route loads
+//   ?debug=1 — draw route internals (gap edges, stitch points) + console dump
+const urlParams = new URLSearchParams(location.search);
+const devSim = urlParams.has('sim');
+const devDebug = urlParams.has('debug');
+let simUnmount: (() => void) | null = null;
+let simInstance: RideSimulator | null = null;
+
+// Rerouting state (see maybeReroute)
+let offRouteSince: number | null = null;
+let rerouting = false;
+let lastRerouteAt = 0;
+const REROUTE_AFTER_MS = 8000;    // sustained off-route before rerouting
+const REROUTE_COOLDOWN_MS = 20000; // min time between reroute attempts
+
 let homeAddress: HomeAddress | null = null;
 let routeRequestId = 0;
 let followUser = true;
-let editingPreferences = false;
-let pbotWasVisibleBeforePrefs = false;
-let pbotClickHandler: ((e: L.LeafletEvent) => void) | null = null;
-let prefMapClickHandler: ((e: L.LeafletMouseEvent) => void) | null = null;
-let prefPbotFlagHandler: ((e: L.LeafletEvent) => void) | null = null;
-
-// Multi-waypoint custom segment drawing state
-let prefWaypoints: { lat: number; lng: number }[] = [];
-let prefWaypointMarkers: L.CircleMarker[] = [];
-let prefRouteLine: L.Polyline | null = null;
-let prefRouteCoords: [number, number][] = []; // accumulated BRouter coords
-let prefComputeId = 0;
 
 function $(id: string): HTMLElement {
   return document.getElementById(id)!;
@@ -85,18 +77,20 @@ function $(id: string): HTMLElement {
 function init(): void {
   const map = initMap();
 
-  // Load PBOT data and preferences in parallel, then inject preference edges
-  Promise.all([loadPbotData(map), loadPreferences()]).then(() => {
-    injectPreferenceEdges();
-    initPreferencesLayer(map);
-    onPreferenceRemoved(() => {
-      updatePreferencesStatus();
-    });
+  // Apply routing profile from URL before the layers menu renders its radio state
+  const urlProfile = urlParams.get('profile');
+  if (urlProfile && urlProfile in ROUTE_PROFILES) {
+    setRouteProfile(urlProfile as RouteProfileKey);
+  }
+
+  loadPbotData(map).then(() => {
+    // Route from URL params only after the graph is ready, so safest mode
+    // uses PBOT pathfinding instead of silently falling back to BRouter
+    applyUrlRoute();
   });
 
   map.on('click', (e: L.LeafletMouseEvent) => {
     if (isNavigating()) return;
-    if (editingPreferences) return; // clicks handled by PBOT layer
     if (isBuilding()) {
       addWaypoint(e.latlng);
       return;
@@ -194,13 +188,6 @@ function init(): void {
   // Saved routes buttons
   $('btn-saved-routes').addEventListener('click', handleShowSavedRoutes);
   $('btn-close-saved').addEventListener('click', () => $('saved-routes-panel').classList.add('hidden'));
-
-  // Preferences buttons
-  $('btn-preferences').addEventListener('click', () => handleEnterPreferences(map));
-  $('btn-exit-preferences').addEventListener('click', handleExitPreferences);
-  $('btn-pref-undo').addEventListener('click', handlePrefUndo);
-  $('btn-pref-save-prefer').addEventListener('click', () => handlePrefSave('preferred'));
-  $('btn-pref-save-block').addEventListener('click', () => handlePrefSave('nogo'));
 
   // Initialize button states (end clear button hidden on load)
   updateClearButtons();
@@ -407,6 +394,47 @@ function tryRoute(): void {
   }
 }
 
+// ========== Dev tooling: URL-driven routes ==========
+
+function parseLatLngParam(value: string | null): L.LatLng | null {
+  if (!value) return null;
+  const parts = value.split(',').map(Number);
+  if (parts.length !== 2 || parts.some(isNaN)) return null;
+  const [lat, lng] = parts;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return L.latLng(lat, lng);
+}
+
+/** Load a route directly from ?from/&to URL params (dev/repro workflow). */
+async function applyUrlRoute(): Promise<void> {
+  const from = parseLatLngParam(urlParams.get('from'));
+  const to = parseLatLngParam(urlParams.get('to'));
+  if (!from || !to) return;
+
+  state.start = from;
+  state.end = to;
+  setStartMarker(from);
+  setEndMarker(to);
+  resolveAndDisplay('start', from.lat, from.lng);
+  resolveAndDisplay('end', to.lat, to.lng);
+
+  await handleRoute();
+
+  if (urlParams.get('sim') === 'auto' && state.route) {
+    handleStartNav();
+  }
+}
+
+/** Keep from/to/profile in the URL so any route is instantly reproducible. */
+function syncUrlWithRoute(): void {
+  if (!state.start || !state.end) return;
+  const params = new URLSearchParams(location.search);
+  params.set('from', `${state.start.lat.toFixed(5)},${state.start.lng.toFixed(5)}`);
+  params.set('to', `${state.end.lat.toFixed(5)},${state.end.lng.toFixed(5)}`);
+  params.set('profile', getRouteProfile());
+  history.replaceState(null, '', `${location.pathname}?${params}`);
+}
+
 async function handleLocate(): Promise<void> {
   const btn = $('btn-my-location');
   btn.classList.add('locating');
@@ -448,17 +476,6 @@ function handleSwap(): void {
   tryRoute();
 }
 
-/** Collect preference polylines for route classification coloring. */
-function getPreferenceCoords(): { preferred?: [number, number][][]; nogo?: [number, number][][] } {
-  const all = getUniquePreferences();
-  const preferred = all.filter(p => p.type === 'preferred').flatMap(p => p.coords);
-  const nogo = all.filter(p => p.type === 'nogo').flatMap(p => p.coords);
-  return {
-    preferred: preferred.length > 0 ? preferred : undefined,
-    nogo: nogo.length > 0 ? nogo : undefined,
-  };
-}
-
 async function handleRoute(): Promise<void> {
   if (!state.start || !state.end) return;
 
@@ -470,8 +487,23 @@ async function handleRoute(): Promise<void> {
     if (requestId !== routeRequestId) return;
     state.route = route;
     detectBacktracking(route.coordinates);
-    displayRoute(route.coordinates, classifyRoute(route.coordinates, getPreferenceCoords()));
+    displayRoute(route.coordinates, classifyRoute(route.coordinates));
     showRoutePanel(route);
+    syncUrlWithRoute();
+    if (devDebug && route.debug) {
+      displayDebugOverlay(route.debug);
+      console.log('[PedalPDX debug] route:', {
+        source: route.debug.source,
+        distance: `${(route.distance / METERS_PER_MILE).toFixed(2)} mi`,
+        coords: route.coordinates.length,
+        gapSegments: route.debug.gapSegments.length,
+        stitchPoints: route.debug.stitchPoints,
+      });
+      console.table(route.instructions.map(i => ({
+        text: i.text, icon: i.icon,
+        cumDist: Math.round(i.distance), stepDist: Math.round(i.stepDistance),
+      })));
+    }
   } catch (err) {
     if (requestId !== routeRequestId) return;
     showToast(`Routing error: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -715,346 +747,10 @@ async function handleSaveRoute(): Promise<void> {
   state.end = L.latLng(last.lat, last.lng);
   setStartMarker(state.start);
   setEndMarker(state.end);
-  displayRoute(route.coordinates, classifyRoute(route.coordinates, getPreferenceCoords()));
+  displayRoute(route.coordinates, classifyRoute(route.coordinates));
   showRoutePanel(route);
   resolveAndDisplay('start', first.lat, first.lng);
   resolveAndDisplay('end', last.lat, last.lng);
-}
-
-// ========== Road preferences mode ==========
-
-function handleEnterPreferences(map: L.Map): void {
-  closeLayersMenu();
-  editingPreferences = true;
-  document.body.classList.add('editing-preferences');
-  $('preferences-toolbar').classList.remove('hidden');
-  clearRoute();
-  clearMarkers();
-  $('route-panel').classList.add('hidden');
-  pbotWasVisibleBeforePrefs = isPbotLayerVisible();
-  showPbotLayer(map);
-  showPreferencesLayer();
-  clearPrefDrawing(map);
-  updatePreferencesStatus();
-
-  // PBOT layer click handler — for segments that have PBOT data
-  const layer = getPbotLayer();
-  if (layer) {
-    pbotClickHandler = (e: L.LeafletEvent) => {
-      const le = e as L.LeafletMouseEvent;
-      const featureLayer = (le as L.LeafletMouseEvent & { layer?: { feature?: GeoJSON.Feature } }).layer;
-      const feature = featureLayer?.feature;
-      if (!feature) return;
-
-      // If currently drawing a custom segment, ignore PBOT clicks
-      if (prefWaypoints.length > 0) return;
-
-      const geom = feature.geometry;
-      const name = feature.properties?.StreetName || 'Unnamed';
-
-      const edgeKeys: string[] = [];
-      const edgeCoords: [number, number][][] = [];
-
-      const lines: number[][][] =
-        geom.type === 'MultiLineString' ? geom.coordinates :
-        geom.type === 'LineString' ? [geom.coordinates] : [];
-
-      for (const line of lines) {
-        if (line.length < 2) continue;
-        const a = line[0]; // [lng, lat]
-        const b = line[line.length - 1];
-        const nkA = nk(a[1], a[0]);
-        const nkB = nk(b[1], b[0]);
-        if (nkA === nkB) continue;
-        edgeKeys.push(canonicalEdgeKey(nkA, nkB));
-        edgeCoords.push(line.map(c => [c[1], c[0]] as [number, number]));
-      }
-
-      if (edgeKeys.length === 0) return;
-
-      showPbotPreferencePopup(map, le.latlng, edgeKeys, edgeCoords, name);
-    };
-    layer.on('click', pbotClickHandler);
-  }
-
-  // Map click handler — multi-waypoint drawing for custom segments
-  prefMapClickHandler = (e: L.LeafletMouseEvent) => {
-    if ((e.originalEvent as MouseEvent & { _pbotHandled?: boolean })._pbotHandled) return;
-    addPrefWaypoint(map, e.latlng);
-  };
-  map.on('click', prefMapClickHandler);
-
-  // Mark PBOT layer clicks so the map handler ignores them
-  if (layer) {
-    prefPbotFlagHandler = (e: L.LeafletEvent) => {
-      ((e as L.LeafletMouseEvent).originalEvent as MouseEvent & { _pbotHandled?: boolean })._pbotHandled = true;
-    };
-    layer.on('click', prefPbotFlagHandler);
-  }
-}
-
-// ---- Multi-waypoint custom segment drawing ----
-
-function addPrefWaypoint(map: L.Map, latlng: L.LatLng): void {
-  const wp = { lat: latlng.lat, lng: latlng.lng };
-  prefWaypoints.push(wp);
-
-  const marker = L.circleMarker(latlng, {
-    radius: 7, color: '#2d8a4e', fillColor: '#2d8a4e', fillOpacity: 0.9, weight: 2,
-  }).addTo(map);
-  prefWaypointMarkers.push(marker);
-
-  if (prefWaypoints.length === 1) {
-    $('preferences-status').textContent = 'Tap to extend the route';
-    updatePrefButtons();
-    return;
-  }
-
-  // Fetch BRouter segment between the last two waypoints
-  const prev = prefWaypoints[prefWaypoints.length - 2];
-  const cur = wp;
-  const reqId = ++prefComputeId;
-
-  $('preferences-status').textContent = 'Routing...';
-
-  fetchRoadGeometry(prev.lat, prev.lng, cur.lat, cur.lng)
-    .then(segCoords => {
-      if (reqId !== prefComputeId) return;
-      if (segCoords.length < 2) {
-        showToast('Could not find road between points');
-        return;
-      }
-
-      // Append segment coords (skip first point to avoid duplicate at junction)
-      const startIdx = prefRouteCoords.length === 0 ? 0 : 1;
-      for (let i = startIdx; i < segCoords.length; i++) {
-        prefRouteCoords.push(segCoords[i]);
-      }
-
-      // Update the route line on the map
-      if (prefRouteLine) map.removeLayer(prefRouteLine);
-      prefRouteLine = L.polyline(
-        prefRouteCoords.map(c => L.latLng(c[0], c[1])),
-        { color: '#2196f3', weight: 6, opacity: 0.8 },
-      ).addTo(map);
-
-      updatePrefButtons();
-      const miles = (computeDistance(prefRouteCoords) / METERS_PER_MILE).toFixed(1);
-      $('preferences-status').textContent = `${prefWaypoints.length} points \u00B7 ${miles} mi`;
-    })
-    .catch(() => {
-      if (reqId !== prefComputeId) return;
-      showToast('Could not fetch road geometry');
-      // Remove the failed waypoint
-      prefWaypoints.pop();
-      const m = prefWaypointMarkers.pop();
-      if (m) map.removeLayer(m);
-      updatePrefButtons();
-    });
-}
-
-
-function handlePrefUndo(): void {
-  const map = getMap();
-  if (prefWaypoints.length === 0) return;
-
-  prefWaypoints.pop();
-  const m = prefWaypointMarkers.pop();
-  if (m) map.removeLayer(m);
-
-  if (prefWaypoints.length < 2) {
-    // Not enough points for a route — clear everything
-    prefRouteCoords = [];
-    if (prefRouteLine) { map.removeLayer(prefRouteLine); prefRouteLine = null; }
-    prefComputeId++; // cancel any in-flight requests
-    updatePrefButtons();
-    if (prefWaypoints.length === 1) {
-      $('preferences-status').textContent = 'Tap to extend the route';
-    } else {
-      updatePreferencesStatus();
-    }
-    return;
-  }
-
-  // Recompute the full route from remaining waypoints
-  prefRouteCoords = [];
-  if (prefRouteLine) { map.removeLayer(prefRouteLine); prefRouteLine = null; }
-  const reqId = ++prefComputeId;
-
-  $('preferences-status').textContent = 'Recalculating...';
-
-  // Fetch all segments in parallel, then concatenate in order
-  const segmentPromises = [];
-  for (let i = 1; i < prefWaypoints.length; i++) {
-    const prev = prefWaypoints[i - 1];
-    const cur = prefWaypoints[i];
-    segmentPromises.push(
-      fetchRoadGeometry(prev.lat, prev.lng, cur.lat, cur.lng).catch(() => [] as [number, number][])
-    );
-  }
-
-  Promise.all(segmentPromises).then(segments => {
-    if (reqId !== prefComputeId) return;
-    for (const segCoords of segments) {
-      if (segCoords.length < 2) continue;
-      const startIdx = prefRouteCoords.length === 0 ? 0 : 1;
-      for (let j = startIdx; j < segCoords.length; j++) {
-        prefRouteCoords.push(segCoords[j]);
-      }
-    }
-    if (prefRouteCoords.length >= 2) {
-      prefRouteLine = L.polyline(
-        prefRouteCoords.map(c => L.latLng(c[0], c[1])),
-        { color: '#2196f3', weight: 6, opacity: 0.8 },
-      ).addTo(map);
-    }
-    updatePrefButtons();
-    const miles = (computeDistance(prefRouteCoords) / METERS_PER_MILE).toFixed(1);
-    $('preferences-status').textContent = `${prefWaypoints.length} points \u00B7 ${miles} mi`;
-  });
-}
-
-async function handlePrefSave(type: 'preferred' | 'nogo'): Promise<void> {
-  if (prefRouteCoords.length < 2) return;
-
-  const map = getMap();
-  const coords = prefRouteCoords.slice();
-
-  // Inject into graph and get edge keys
-  const allEdgeKeys = injectPolylineEdges(coords, 'Custom segment');
-  if (allEdgeKeys.length === 0) {
-    showToast('Could not create segment');
-    return;
-  }
-
-  const groupId = crypto.randomUUID();
-  const prefs: EdgePreference[] = allEdgeKeys.map(ek => ({
-    edgeKey: ek,
-    type,
-    name: 'Custom segment',
-    coords: [coords],
-    createdAt: Date.now(),
-    groupId,
-    allEdgeKeys,
-  }));
-
-  await setPreferenceGroup(prefs);
-
-  // Clear the drawing state but stay in preferences mode
-  clearPrefDrawing(map);
-  updatePreferencesStatus();
-  showToast(type === 'preferred' ? 'Safe route saved' : 'Blocked route saved');
-}
-
-function updatePrefButtons(): void {
-  const hasRoute = prefRouteCoords.length >= 2;
-  ($('btn-pref-save-prefer') as HTMLButtonElement).disabled = !hasRoute;
-  ($('btn-pref-save-block') as HTMLButtonElement).disabled = !hasRoute;
-}
-
-function clearPrefDrawing(map: L.Map): void {
-  for (const m of prefWaypointMarkers) map.removeLayer(m);
-  prefWaypointMarkers = [];
-  prefWaypoints = [];
-  prefRouteCoords = [];
-  prefComputeId++;
-  if (prefRouteLine) { map.removeLayer(prefRouteLine); prefRouteLine = null; }
-  updatePrefButtons();
-}
-
-// ---- PBOT feature popup (single-tap on existing bike route) ----
-
-function showPbotPreferencePopup(
-  map: L.Map,
-  latlng: L.LatLng,
-  edgeKeys: string[],
-  edgeCoords: [number, number][][],
-  name: string,
-): void {
-  const existing = getPreferences().get(edgeKeys[0]);
-  const existingLabel = existing ? (existing.type === 'preferred' ? ' (Safe)' : ' (Blocked)') : '';
-
-  const popup = L.popup()
-    .setLatLng(latlng)
-    .setContent(
-      `<strong>${name}</strong>${existingLabel}` +
-      `<div class="pref-popup-actions">` +
-      `<button class="pref-popup-btn pref-popup-btn-prefer" data-action="prefer">Safe</button>` +
-      `<button class="pref-popup-btn pref-popup-btn-block" data-action="block">Block</button>` +
-      `<button class="pref-popup-btn pref-popup-btn-clear" data-action="clear">Clear</button>` +
-      `</div>`
-    )
-    .openOn(map);
-
-  const container = popup.getElement();
-  if (container) {
-    container.addEventListener('click', async (ev) => {
-      const btn = (ev.target as HTMLElement).closest('.pref-popup-btn') as HTMLElement | null;
-      if (!btn) return;
-      const action = btn.dataset.action;
-
-      if (action === 'prefer' || action === 'block') {
-        const type = action === 'prefer' ? 'preferred' : 'nogo' as const;
-        const prefs: EdgePreference[] = edgeKeys.map((ek, i) => ({
-          edgeKey: ek,
-          type,
-          name,
-          coords: [edgeCoords[i]],
-          createdAt: Date.now(),
-        }));
-        await setPreferenceGroup(prefs);
-      } else if (action === 'clear') {
-        await Promise.all(edgeKeys.map(ek => removePreference(ek)));
-      }
-
-      map.closePopup();
-      updatePreferencesStatus();
-    });
-  }
-}
-
-// ---- Mode exit ----
-
-function handleExitPreferences(): void {
-  const map = getMap();
-  editingPreferences = false;
-  document.body.classList.remove('editing-preferences');
-  $('preferences-toolbar').classList.add('hidden');
-
-  clearPrefDrawing(map);
-  hidePreferencesLayer();
-
-  // Restore PBOT layer to its previous visibility state
-  if (!pbotWasVisibleBeforePrefs) {
-    hidePbotLayer(map);
-  }
-
-  const layer = getPbotLayer();
-  if (layer) {
-    if (pbotClickHandler) {
-      layer.off('click', pbotClickHandler);
-      pbotClickHandler = null;
-    }
-    if (prefPbotFlagHandler) {
-      layer.off('click', prefPbotFlagHandler);
-      prefPbotFlagHandler = null;
-    }
-  }
-
-  if (prefMapClickHandler) {
-    map.off('click', prefMapClickHandler);
-    prefMapClickHandler = null;
-  }
-
-  if (state.start && state.end) tryRoute();
-}
-
-function updatePreferencesStatus(): void {
-  const count = getUniquePreferences().length;
-  const status = count === 0
-    ? 'Tap a bike route or map to draw'
-    : `${count} preference${count !== 1 ? 's' : ''} set \u00B7 tap to draw more`;
-  $('preferences-status').textContent = status;
 }
 
 // ========== Saved routes ==========
@@ -1142,7 +838,7 @@ async function handleLoadSavedRoute(id: string): Promise<void> {
 
   setStartMarker(state.start);
   setEndMarker(state.end);
-  displayRoute(route.coordinates, classifyRoute(route.coordinates, getPreferenceCoords()));
+  displayRoute(route.coordinates, classifyRoute(route.coordinates));
   showRoutePanel(route);
 
   resolveAndDisplay('start', first.lat, first.lng);
@@ -1174,11 +870,26 @@ function handleStartNav(): void {
   setPlanningMarkersVisible(false);
   followUser = true;
 
-  startNavigation(state.route, onNavUpdate, onNavOffRoute);
+  offRouteSince = null;
+  rerouting = false;
+  lastRerouteAt = 0;
+
+  if (devSim) {
+    simInstance = new RideSimulator(state.route);
+    simUnmount = mountSimulatorControls(simInstance);
+    startNavigation(state.route, onNavUpdate, onNavOffRoute, simInstance);
+  } else {
+    startNavigation(state.route, onNavUpdate, onNavOffRoute);
+  }
 }
 
 function handleStopNav(): void {
   stopNavigation();
+  if (simUnmount) {
+    simUnmount();
+    simUnmount = null;
+  }
+  simInstance = null;
   resetMapBearing();
   document.body.classList.remove('navigating');
   // Leaflet needs to know the map container is back to normal size
@@ -1189,7 +900,7 @@ function handleStopNav(): void {
   setPlanningMarkersVisible(true);
 
   if (state.route) {
-    displayRoute(state.route.coordinates, classifyRoute(state.route.coordinates, getPreferenceCoords()));
+    displayRoute(state.route.coordinates, classifyRoute(state.route.coordinates));
   }
 }
 
@@ -1224,19 +935,66 @@ function onNavUpdate(update: NavUpdate): void {
 
   if (update.offRoute) {
     $('nav-off-route').classList.remove('hidden');
-    if (offRouteTimeout) clearTimeout(offRouteTimeout);
-  } else {
-    if (!$('nav-off-route').classList.contains('hidden')) {
-      if (offRouteTimeout) clearTimeout(offRouteTimeout);
-      offRouteTimeout = setTimeout(() => {
-        $('nav-off-route').classList.add('hidden');
-      }, 2000);
+    if (offRouteTimeout) {
+      clearTimeout(offRouteTimeout);
+      offRouteTimeout = null;
     }
+  } else if (offRouteTimeout === null && !$('nav-off-route').classList.contains('hidden')) {
+    // Schedule the hide once — position updates arrive every second, so
+    // re-scheduling on each update would keep resetting the timer forever
+    offRouteTimeout = setTimeout(() => {
+      $('nav-off-route').classList.add('hidden');
+      offRouteTimeout = null;
+    }, 2000);
   }
+
+  maybeReroute(update);
 }
 
 function onNavOffRoute(): void {
-  // Could trigger re-routing here in the future
+  // Rerouting is handled in maybeReroute (needs the full NavUpdate)
+}
+
+/**
+ * Recompute the route from the rider's current position once they've been
+ * off-route for a sustained period. Debounced + cooldown so GPS noise and
+ * failed attempts don't cause reroute storms.
+ */
+function maybeReroute(update: NavUpdate): void {
+  if (!update.offRoute) {
+    offRouteSince = null;
+    return;
+  }
+  if (offRouteSince === null) offRouteSince = Date.now();
+  if (rerouting) return;
+  if (Date.now() - offRouteSince < REROUTE_AFTER_MS) return;
+  if (Date.now() - lastRerouteAt < REROUTE_COOLDOWN_MS) return;
+  if (!state.end) return;
+
+  rerouting = true;
+  lastRerouteAt = Date.now();
+  $('nav-off-route').querySelector('span')!.textContent = 'Rerouting…';
+
+  computeGuidedRoute(L.latLng(update.userLat, update.userLng), state.end)
+    .then((route) => {
+      if (!isNavigating()) return;
+      state.route = route;
+      updateRoute(route);
+      // Redraw without refitting the viewport — stay locked on the rider
+      displayRoute(route.coordinates, classifyRoute(route.coordinates), false);
+      simInstance?.retarget(route);
+      announce('Route recalculated.');
+    })
+    .catch((err) => {
+      // Offline or routing failed — keep guiding on the old route;
+      // cooldown will allow another attempt if still off-route.
+      console.warn('[PedalPDX] Reroute failed:', err instanceof Error ? err.message : err);
+    })
+    .finally(() => {
+      rerouting = false;
+      offRouteSince = null;
+      $('nav-off-route').querySelector('span')!.textContent = 'Off route';
+    });
 }
 
 // ========== Utilities ==========

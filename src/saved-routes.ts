@@ -1,5 +1,5 @@
 import { openDB, type IDBPDatabase, type DBSchema } from 'idb';
-import type { SavedRoute, EdgePreference, HomeAddress } from './types';
+import type { SavedRoute, HomeAddress } from './types';
 
 interface PedalPDXDB extends DBSchema {
   savedRoutes: {
@@ -7,9 +7,11 @@ interface PedalPDXDB extends DBSchema {
     value: SavedRoute;
     indexes: { 'by-date': number };
   };
+  // Legacy store from the removed road-preferences feature; kept in the
+  // schema so existing v3 databases open without a version bump.
   edgePreferences: {
     key: string;
-    value: EdgePreference;
+    value: unknown;
   };
   settings: {
     key: string;
