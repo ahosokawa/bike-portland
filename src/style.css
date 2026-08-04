@@ -1078,20 +1078,6 @@ body::after {
   border-color: #2d8a4e;
 }
 
-.builder-btn-danger {
-  background: #e74c3c;
-  color: white;
-  border-color: #e74c3c;
-}
-
-.builder-btn-danger:active {
-  background: #c0392b;
-}
-
-.builder-btn-danger:disabled {
-  background: #e74c3c;
-  border-color: #e74c3c;
-}
 
 /* ========== Waypoint markers ========== */
 .waypoint-marker {
@@ -1244,73 +1230,12 @@ body::after {
   to   { opacity: 0; }
 }
 
-/* ========== Preferences toolbar ========== */
-#preferences-toolbar {
-  position: absolute;
-  bottom: 24px;
-  left: 12px;
-  right: 12px;
-  z-index: 1000;
-  padding-bottom: max(0px, env(safe-area-inset-bottom));
-}
-
-#preferences-toolbar.hidden {
-  display: none;
-}
-
-/* ========== Preference popup action buttons ========== */
-.pref-popup-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.pref-popup-btn {
-  flex: 1;
-  padding: 6px 8px;
-  border: 1.5px solid #ddd;
-  border-radius: 6px;
-  background: white;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: background 0.1s;
-}
-
-.pref-popup-btn:active {
-  background: #f0f0f0;
-}
-
-.pref-popup-btn-prefer {
-  color: #00c853;
-  border-color: #00c853;
-}
-
-.pref-popup-btn-block {
-  color: #e74c3c;
-  border-color: #e74c3c;
-}
-
-.pref-popup-btn-clear,
-.pref-popup-btn-cancel {
-  color: #888;
-}
 
 /* ========== Builder mode: hide planning UI ========== */
 body.custom-building #route-planner,
 body.custom-building #btn-layers,
 body.custom-building #layers-panel,
 body.custom-building #layers-backdrop {
-  display: none !important;
-}
-
-/* ========== Preferences editing mode: hide planning UI ========== */
-body.editing-preferences #route-planner,
-body.editing-preferences #btn-layers,
-body.editing-preferences #layers-panel,
-body.editing-preferences #layers-backdrop,
-body.editing-preferences #route-panel {
   display: none !important;
 }
 
@@ -1341,3 +1266,48 @@ body.navigating #map {
   transform-origin: center center;
 }
 
+
+/* ========== Dev ride simulator panel ========== */
+.sim-panel {
+  position: fixed;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  left: 12px;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(26, 26, 46, 0.92);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 13px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.sim-panel .sim-label {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #ffb300;
+}
+
+.sim-panel .sim-btn {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sim-panel .sim-btn.active {
+  background: #e74c3c;
+}
+
+.sim-panel .sim-progress {
+  min-width: 36px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #bbb;
+}

@@ -1,26 +1,13 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { buildGraph, findPbotPath, nk, canonicalEdgeKey, injectPolylineEdges } from './pbot-graph';
+import { buildGraph, findPbotPath } from './pbot-graph';
 import type { PbotPathResult } from './pbot-graph';
 import { indexBusyRoads } from './busy-roads';
 import { haversine } from './geo';
-
-// cleanEdgeName lives in router.ts but can't be imported here (Leaflet needs window).
-// Duplicated for testing — keep in sync with router.ts.
-const KEEP_UPPER = /^(NE|NW|SE|SW|N|S|E|W|US|OR|ST|AVE|BLVD|DR|RD|CT|PL|LN|HWY|PKWY|WAY|BRG|MUP)$/i;
-function cleanEdgeName(raw: string): string {
-  if (!raw) return '';
-  if (/\bI-?\d+\s*(FWY|HWY)/i.test(raw)) return '';
-  if (/\bRAMP\b/i.test(raw)) return '';
-  const mupMatch = raw.match(/I-?(\d+)\s*MULTI\s*USE\s*(PATH|TRAIL)/i);
-  if (mupMatch) return `I-${mupMatch[1]} Path`;
-  if (/SPRINGWATER\s+CORRIDOR/i.test(raw)) return 'Springwater Corridor';
-  return raw.replace(/\b\w+/g, (w) => {
-    if (KEEP_UPPER.test(w)) return w.toUpperCase();
-    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-  });
-}
+// router.ts no longer pulls in browser-only modules, so the real
+// cleanEdgeName can be imported directly (previously duplicated here)
+import { cleanEdgeName } from './router';
 
 // Load actual PBOT data for integration-style route tests
 beforeAll(() => {
@@ -181,8 +168,6 @@ describe('findPbotPath: I-205 PATH CONNECTION edge', () => {
 // Broadway Bridge approach — ensure the route goes directly onto the bridge
 // rather than detouring via Larrabee or other side streets.
 const NW_10TH = { lat: 45.5273, lng: -122.6810 };
-// N Weidler is one-way westbound — route should NOT go eastbound on it
-const WEIDLER_AREA = { lat: 45.53425, lng: -122.6635 };
 
 describe('findPbotPath: Cook → NW 10th (Broadway Bridge)', () => {
   it('should go directly on Broadway to the bridge (no Larrabee detour)', () => {
@@ -209,99 +194,6 @@ describe('findPbotPath: Cook → NW 10th (Broadway Bridge)', () => {
       // Eastward = longitude increasing (less negative)
       expect(last[1]).not.toBeGreaterThan(first[1] + 0.0005);
     }
-  });
-});
-
-// ========== Edge override tests ==========
-
-describe('findPbotPath with edge overrides', () => {
-  it('preferred override should cause a normally-penalized edge to be used', () => {
-    // First, get the baseline path without overrides
-    const baseline = findPbotPath(COOK_431.lat, COOK_431.lng, THE_REDD.lat, THE_REDD.lng)!;
-    expect(baseline).not.toBeNull();
-
-    // Find an SR_MT (medium traffic) edge that is NOT on the baseline path.
-    // We'll prefer it and verify the route changes to include it.
-    // SR_MT edges on NE 7th near the start are heavily penalized in safest mode.
-    // Instead, just verify that "preferred" overrides work by preferring an edge
-    // on the baseline — total cost should decrease (shorter effective distance).
-    const baselineKeys = new Set<string>();
-    const baselineEdgeInfo: { key: string; ct: string }[] = [];
-
-    // Reconstruct edge keys from the baseline path
-    const coords = flattenPath(baseline);
-    // Use first and second edge to get node keys
-    if (baseline.edges.length >= 2) {
-      const e0 = baseline.edges[0];
-      const startNk = nk(e0.coords[0][0], e0.coords[0][1]);
-      const endNk = nk(e0.coords[e0.coords.length - 1][0], e0.coords[e0.coords.length - 1][1]);
-      baselineKeys.add(canonicalEdgeKey(startNk, endNk));
-    }
-
-    // Prefer one of the existing edges — the path should still work
-    if (baselineKeys.size > 0) {
-      const overrides = new Map<string, 'preferred' | 'nogo'>();
-      const key = [...baselineKeys][0];
-      overrides.set(key, 'preferred');
-
-      const withPref = findPbotPath(COOK_431.lat, COOK_431.lng, THE_REDD.lat, THE_REDD.lng, 'safest', overrides);
-      expect(withPref).not.toBeNull();
-      expect(withPref!.edges.length).toBeGreaterThan(0);
-    }
-  });
-
-  it('nogo override on a critical edge should cause the route to avoid it', () => {
-    // Get the baseline path
-    const baseline = findPbotPath(COOK_431.lat, COOK_431.lng, THE_REDD.lat, THE_REDD.lng)!;
-    expect(baseline).not.toBeNull();
-    expect(baseline.edges.length).toBeGreaterThan(3);
-
-    // Block a middle edge — the route should find an alternative
-    const midIdx = Math.floor(baseline.edges.length / 2);
-    const midEdge = baseline.edges[midIdx];
-    const startNk = nk(midEdge.coords[0][0], midEdge.coords[0][1]);
-    const endNk = nk(midEdge.coords[midEdge.coords.length - 1][0], midEdge.coords[midEdge.coords.length - 1][1]);
-    const blockedKey = canonicalEdgeKey(startNk, endNk);
-
-    const overrides = new Map<string, 'preferred' | 'nogo'>();
-    overrides.set(blockedKey, 'nogo');
-
-    const rerouted = findPbotPath(COOK_431.lat, COOK_431.lng, THE_REDD.lat, THE_REDD.lng, 'safest', overrides);
-    expect(rerouted).not.toBeNull();
-
-    // The rerouted path should not contain the blocked edge
-    const reroutedKeys = new Set<string>();
-    for (const edge of rerouted!.edges) {
-      const a = nk(edge.coords[0][0], edge.coords[0][1]);
-      const b = nk(edge.coords[edge.coords.length - 1][0], edge.coords[edge.coords.length - 1][1]);
-      reroutedKeys.add(canonicalEdgeKey(a, b));
-    }
-    expect(reroutedKeys.has(blockedKey)).toBe(false);
-  });
-
-  it('injectPolylineEdges should create multiple edge keys from a polyline', () => {
-    // Inject a polyline with enough length to produce multiple edges (>200m segments)
-    const customCoords: [number, number][] = [
-      [45.5470, -122.6610],
-      [45.5450, -122.6610],  // ~220m south
-      [45.5430, -122.6610],  // ~220m south
-      [45.5410, -122.6610],  // ~220m south
-    ];
-
-    const edgeKeys = injectPolylineEdges(customCoords, 'Test custom road');
-    expect(edgeKeys.length).toBeGreaterThan(1); // should produce multiple edges
-
-    // Each edge key should be a valid canonical key (two node keys joined by |)
-    for (const ek of edgeKeys) {
-      expect(ek).toContain('|');
-      const parts = ek.split('|');
-      expect(parts.length).toBe(2);
-      expect(parts[0] < parts[1]).toBe(true); // canonical order
-    }
-
-    // All edge keys should be unique
-    const unique = new Set(edgeKeys);
-    expect(unique.size).toBe(edgeKeys.length);
   });
 });
 

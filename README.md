@@ -8,7 +8,7 @@ A mobile-first PWA for bike-friendly routing in Portland, OR. Uses official PBOT
 
 - **Bike-optimized routing** — Two profiles: Bike Paths (PBOT A* pathfinding through Portland's bike network) and Direct (BRouter's low-traffic profile). Routes prefer cycleways, greenways, and low-traffic streets.
 - **PBOT bike network overlay** — 12,800+ route segments from Portland Bureau of Transportation, color-coded by infrastructure quality (green = multi-use path, blue = bike lane, red = difficult connection).
-- **Turn-by-turn navigation** — Real-time GPS tracking, voice announcements before turns, off-route warnings, and screen wake lock. Designed for phone-on-handlebars use.
+- **Turn-by-turn navigation** — Real-time GPS tracking, voice announcements before turns, off-route warnings with automatic rerouting, and screen wake lock. Designed for phone-on-handlebars use.
 - **Elevation profile** — See climbing for any route. Useful for Portland's west hills.
 - **Address search** — Geocoding via Photon, bounded to Portland.
 - **Custom routes** — Build multi-waypoint routes and save them for offline use.
@@ -39,10 +39,37 @@ Open http://localhost:5173 on your phone (or use your browser's mobile emulation
 ```bash
 npm run build        # Build to dist/
 npm run preview      # Preview production build locally
-npm run test         # Run tests
+npm run test         # Run tests (offline — BRouter calls replay from recorded fixtures)
+npx tsc --noEmit     # Typecheck (vite build does not typecheck)
 ```
 
 Deploys automatically to GitHub Pages on push to `main` via the included GitHub Actions workflow.
+
+## Dev Tools
+
+URL parameters for fast testing without tapping through the UI or riding a bike:
+
+| Param | Effect |
+|-------|--------|
+| `?from=lat,lng&to=lat,lng` | Load and compute a route on startup |
+| `&profile=safest\|balanced` | Select the routing profile |
+| `&sim=1` | Start Navigation uses a fake-GPS ride simulator (speed, pause, veer-off-route controls) |
+| `&sim=auto` | Same, and navigation auto-starts once the URL route loads |
+| `&debug=1` | Draw route internals (gap edges, stitch points) and dump route/instructions to console |
+
+Example — simulate riding Cook St → The Redd with debug overlay:
+
+```
+http://localhost:5173/bike-portland/?from=45.54736,-122.66082&to=45.51459,-122.65699&sim=auto&debug=1
+```
+
+The URL updates as you plan routes manually, so any route you see can be shared or re-loaded by copying the address bar.
+
+To re-record the BRouter test fixtures (needed when routing changes alter which BRouter requests are made — tests fail with a "missing fixture" message):
+
+```bash
+npx tsx scripts/record-brouter-fixtures.ts
+```
 
 ## Refreshing PBOT Data
 
@@ -77,7 +104,9 @@ src/
   router.ts               BRouter API, PBOT path stitching, route profiles
   pbot-graph.ts           A* pathfinding through PBOT bike network, route classification
   pbot-layer.ts           PBOT GeoJSON overlay with infrastructure color-coding
-  navigation.ts           Turn-by-turn engine: GPS tracking, snap-to-route, voice
+  navigation.ts           Turn-by-turn engine: position tracking, snap-to-route, voice
+  ride-simulator.ts       Dev fake-GPS position source + on-screen sim controls
+  route-scenarios.ts      Shared OD pairs for tests and fixture recording
   custom-route-builder.ts Multi-waypoint route creation with live preview
   saved-routes.ts         IndexedDB persistence for saved routes
   search.ts               Photon address search, reverse geocoding
@@ -88,6 +117,8 @@ src/
   geolocation.ts          Device GPS wrapper
   types.ts                Shared TypeScript interfaces
   pbot-graph.test.ts      Integration tests for A* routing
+  router.test.ts          Offline pipeline tests (stitching, instructions) via BRouter fixtures
+  __fixtures__/           Recorded BRouter responses for offline tests
   style.css               Mobile-first styles, navigation HUD
   index.html              App entry point
   info/
@@ -96,7 +127,7 @@ src/
 scripts/
   fetch-pbot-data.ts      Build-time PBOT data fetcher
   fetch-busy-roads.ts     Build-time busy roads fetcher (Overpass)
-  test-routes.ts          Route testing utility
+  record-brouter-fixtures.ts  Records live BRouter responses into src/__fixtures__/
 public/
   data/pbot-routes.geojson  Pre-fetched bike network (~4.5 MB)
   data/busy-roads.geojson   Pre-fetched busy road segments
