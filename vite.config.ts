@@ -50,7 +50,7 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,png,geojson}'],
+        globPatterns: ['**/*.{js,css,html,png,geojson,json}'],
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024, // 6MB for PBOT geojson
         skipWaiting: true,
         clientsClaim: true,

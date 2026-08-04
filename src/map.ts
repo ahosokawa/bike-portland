@@ -86,7 +86,7 @@ export function setEndMarker(latlng: L.LatLng): void {
   }
 }
 
-import type { InfraTier } from './pbot-graph';
+import type { InfraTier } from './street-graph';
 
 const TIER_COLORS: Record<InfraTier, string> = {
   path:    '#00c853', // bright green — multi-use paths
@@ -147,23 +147,11 @@ import type { RouteDebugInfo } from './types';
 
 let debugLayers: L.Layer[] = [];
 
-/** Draw route internals: gap-edge geometry (dashed magenta) and stitch points. */
+/** Mark where the requested points snapped onto the street network. */
 export function displayDebugOverlay(debug: RouteDebugInfo): void {
   clearDebugOverlay();
 
-  for (const seg of debug.gapSegments) {
-    if (seg.length < 2) continue;
-    const line = L.polyline(seg, {
-      color: '#e040fb',
-      weight: 3,
-      opacity: 0.9,
-      dashArray: '6 6',
-    }).addTo(map);
-    line.bindTooltip('gap edge', { sticky: true });
-    debugLayers.push(line);
-  }
-
-  for (const sp of debug.stitchPoints) {
+  for (const sp of debug.snapPoints) {
     const marker = L.circleMarker(sp.latlng, {
       radius: 8,
       color: '#e040fb',

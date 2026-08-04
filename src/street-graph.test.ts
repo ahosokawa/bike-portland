@@ -151,7 +151,55 @@ describe('safest profile route quality', () => {
   });
 });
 
+describe('legal and sensible riding', () => {
+  it.each(SCENARIOS)('$name never rides the wrong way down a one-way', (scenario) => {
+    const route = graph.route(scenario.from, scenario.to, scenario.profile)!;
+    for (const step of route.steps) {
+      const oneway = graph.edgeOneway(step.edge);
+      if (oneway === 1) expect(step.forward, graph.edgeName(step.edge)).toBe(true);
+      if (oneway === -1) expect(step.forward, graph.edgeName(step.edge)).toBe(false);
+    }
+  });
+
+  it.each(SCENARIOS)('$name does not wander far off the direct line', (scenario) => {
+    // Guards against wandering into the wrong part of the city, which total
+    // distance alone can hide on a route that later doubles back efficiently.
+    // Measured off-line peaks: 680m for every corpus route except
+    // Cook→Zoiglhaus, which swings 6.5km south to ride the Springwater
+    // Corridor east (the previous engine did the same). A loose guard.
+    const route = graph.route(scenario.from, scenario.to, scenario.profile)!;
+    const straight = haversine(
+      [scenario.from.lat, scenario.from.lng],
+      [scenario.to.lat, scenario.to.lng],
+    );
+    for (const c of route.coordinates) {
+      const detour =
+        haversine(c, [scenario.from.lat, scenario.from.lng]) +
+        haversine(c, [scenario.to.lat, scenario.to.lng]);
+      expect(detour).toBeLessThan(straight + 7000);
+    }
+  });
+});
+
 describe('geographic sanity', () => {
+  it('uses the Springwater Corridor to reach Sellwood', () => {
+    // The signature south-east bike route; naming makes this directly checkable
+    const route = graph.route(PLACES.COOK_431, PLACES.SELLWOOD_PARK, 'safest')!;
+    expect(route.names.some(n => /springwater/i.test(n))).toBe(true);
+  });
+
+  it('crosses MLK on the NE Morris greenway rather than a busy street', () => {
+    const route = graph.route(PLACES.COOK_431, PLACES.THE_REDD, 'safest')!;
+    // Every arterial crossing should happen on a named bike-friendly street
+    const crossings = route.names.filter(n => /morris|tillamook|going|klickitat|ankeny/i.test(n));
+    expect(crossings.length).toBeGreaterThan(0);
+  });
+
+  it('does not head north to reach a destination due south', () => {
+    const route = graph.route(PLACES.COOK_431, PLACES.THE_REDD, 'safest')!;
+    expect(route.coordinates.some(c => c[0] > PLACES.COOK_431.lat + 0.002)).toBe(false);
+  });
+
   it('keeps east-side routes east of the Willamette', () => {
     const route = graph.route(PLACES.COOK_431, PLACES.SELLWOOD_PARK, 'safest')!;
     expect(route.coordinates.some(c => c[1] < -122.68)).toBe(false);

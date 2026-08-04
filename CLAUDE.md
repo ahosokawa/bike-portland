@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PedalPDX is a mobile-first PWA for bike-friendly routing in Portland, OR. It provides turn-by-turn navigation with color-coded bike infrastructure data from PBOT (Portland Bureau of Transportation). Fully static — no backend, deploys to GitHub Pages.
+PedalPDX is a mobile-first PWA for bike-friendly routing in Portland, OR. It provides turn-by-turn navigation with color-coded bike infrastructure data from PBOT (Portland Bureau of Transportation). Fully static — no backend, no routing server, deploys to GitHub Pages. Routing runs entirely in the browser over a street graph shipped with the app, so it works offline.
 
 ## Commands
 
@@ -13,15 +13,20 @@ npm run dev          # Vite dev server on http://localhost:5173
 npm run build        # Production build → dist/ (does NOT typecheck)
 npx tsc --noEmit     # Typecheck — keep this green; vite build won't catch type errors
 npm run preview      # Preview production build locally
-npm run fetch-data   # Fetch PBOT bike network + busy roads → public/data/
-npm run test         # Run vitest tests (fully offline; BRouter replayed from fixtures)
+npm run fetch-data   # Refresh all shipped data (PBOT overlay + routing graph)
+npm run fetch-graph  # Rebuild just the routing graph from OSM + PBOT
+npm run test         # Run vitest tests (fully offline)
 npm run test:watch   # Run vitest in watch mode
-npx tsx scripts/record-brouter-fixtures.ts  # Re-record BRouter fixtures (live network)
 ```
+
+`fetch-graph` hits the Overpass API and takes a couple of minutes; the raw
+response is cached in the OS temp dir for a day. Rerun it when OSM data goes
+stale or the graph builder changes, then re-run the tests — they assert against
+the committed artifact.
 
 ### Dev harness (URL params)
 
-`?from=lat,lng&to=lat,lng&profile=safest|balanced` loads a route on startup; `&sim=1` makes Start Navigation use the fake-GPS ride simulator (`ride-simulator.ts` — speed/pause/veer controls); `&sim=auto` auto-starts navigation; `&debug=1` draws gap edges + stitch points and dumps route internals to the console. The URL stays in sync with the current route, so repro cases are copy-pasteable links. Use this instead of manual tapping or real GPS whenever validating routing or navigation behavior.
+`?from=lat,lng&to=lat,lng&profile=safest|balanced` loads a route on startup; `&sim=1` makes Start Navigation use the fake-GPS ride simulator (`ride-simulator.ts` — speed/pause/veer controls); `&sim=auto` auto-starts navigation; `&debug=1` marks where the endpoints snapped onto the network and dumps route internals to the console. The URL stays in sync with the current route, so repro cases are copy-pasteable links. Use this instead of manual tapping or real GPS whenever validating routing or navigation behavior.
 
 ## Architecture
 
@@ -29,49 +34,68 @@ npx tsx scripts/record-brouter-fixtures.ts  # Re-record BRouter fixtures (live n
 
 - **main.ts** — App orchestrator: UI wiring, state management, mode switching (planning ↔ navigation ↔ builder)
 - **map.ts** — Leaflet map initialization, markers, route polylines, user position tracking
-- **router.ts** — BRouter API wrapper, PBOT path stitching, instruction parsing, two routing profiles (`safest` = PBOT A* + BRouter first/last mile, `balanced` = pure BRouter)
-- **pbot-graph.ts** — A* pathfinding through PBOT bike network with per-profile edge weights, gap-bridging edges, and route classification
-- **pbot-layer.ts** — GeoJSON overlay with infrastructure color-coding and popup labels
+- **street-graph.ts** — The routing engine: decodes the shipped graph, builds CSR adjacency, snaps points to the nearest edge, and runs A* over weighted meters. Also owns the infrastructure tiers used for colouring
+- **route-instructions.ts** — Turns a computed route into named turn-by-turn instructions (leg grouping, noise suppression, turn wording)
+- **router.ts** — Thin app-facing API over the engine: profile selection, `RouteResult` shaping, multi-waypoint routes
+- **pbot-layer.ts** — GeoJSON overlay with infrastructure color-coding and popup labels (display only — routing reads PBOT attributes off the graph)
 - **navigation.ts** — Turn-by-turn engine: snap-to-route, voice announcements (Web Speech API), wake lock, mid-navigation route swap (`updateRoute`) for rerouting. Positions come through an injectable `PositionSource` (real GPS by default). Rerouting policy (8s sustained off-route, 20s cooldown) lives in main.ts `maybeReroute`
 - **ride-simulator.ts** — Dev-only fake-GPS `PositionSource` that replays positions along a route (speed multiplier, GPS noise, veer-off-route), plus its floating control panel
-- **route-scenarios.ts** — Shared origin/destination scenarios used by router tests and the fixture recorder
+- **route-scenarios.ts** — Shared origin/destination scenarios (the golden-route corpus) used across routing tests
 - **custom-route-builder.ts** — Multi-waypoint route creation with live preview
 - **search.ts** — Address search via Photon API, reverse geocoding, viewport-biased results
 - **saved-routes.ts** — IndexedDB persistence for custom routes with offline caching, home address storage
 - **elevation.ts** — Canvas-based elevation profile visualization
 - **geo.ts** — Shared geographic utilities (haversine, bearing, point-to-segment projection, unit conversion constants)
-- **busy-roads.ts** — Spatial index of busy roads for crossing detection in gap-bridging
 - **icons.ts** — SVG icon generation for turn instructions
 - **types.ts** — Shared TypeScript interfaces
 
 ### Routing Architecture
 
-Two routing profiles:
-- **Bike Paths** (`safest`): Uses PBOT A* pathfinding for the core route (renders edge geometry directly), with BRouter for first-mile and last-mile segments connecting start/end to the PBOT network. Falls back to pure BRouter if PBOT path is unavailable.
-- **Direct** (`balanced`): Pure BRouter with `fastbike-lowtraffic` profile.
+All routing is client-side over `public/data/street-graph.json` — Portland's
+bikeable OSM network (64k nodes / 78k edges, 3.7MB raw / 1.2MB gzipped) with
+PBOT `ConnectionType` conflated onto edges at build time by
+`scripts/fetch-street-graph.ts`.
 
-BRouter requests pass `timode=2`; turn instructions for BRouter-computed segments are parsed from the returned `voicehints` (generic "Turn left/right" — no street names), falling back to `messages` rows, then to basic start/follow/arrive.
+Costs are **weighted meters**: edge length times a per-class weight, plus
+junction penalties. A PBOT facility on an edge sets the weight (a bike lane on
+an arterial is cheap); otherwise the OSM highway class does. On top of that:
+- **crossing penalties** when passing through a junction with a busier road
+  than either edge being ridden, heavily discounted where OSM marks a signal or
+  marked crossing — this is what replaced the old busy-roads gap-edge machinery
+- **turn costs** for direction changes over 60°
 
-PBOT data is always used for route classification/highlighting regardless of profile.
+Two profiles (`safest` = "Bike Paths", `balanced` = "Direct") differ only in
+their weight and penalty tables.
+
+Both endpoints snap to the nearest **edge**, not the nearest node, and the
+geometry is trimmed to the projected position — so routes start and end where
+the rider actually is. A* is seeded at both ends of the start edge and may
+finish at either end of the destination edge, so it naturally picks the
+approach that doesn't require doubling back.
 
 ### Data Flow
 
-User input (search/tap) → main.ts orchestrates → router.ts either runs PBOT A* path with BRouter first/last mile (safest) or pure BRouter (balanced) → pbot-graph.ts classifies route segments → map.ts renders color-coded route → navigation.ts handles GPS tracking and voice guidance.
+User input (search/tap) → main.ts orchestrates → router.ts asks street-graph.ts
+for a route → route-instructions.ts derives named turns → map.ts renders the
+colour-coded polyline (tiers come back with the route) → navigation.ts handles
+GPS tracking, voice guidance, and rerouting.
 
 ### External Services (all public, no auth)
 
-- **BRouter** (brouter.de) — Routing engine (used for first/last mile in safest mode, full route in balanced mode)
-- **Photon** (photon.komoot.io) — Address geocoding
-- **OpenStreetMap** — Map tiles
-- **PBOT ArcGIS** — Bike infrastructure data (fetched at build time via `npm run fetch-data`)
+Nothing is called at runtime for routing — the graph ships with the app.
+
+- **Photon / Nominatim** — Address geocoding (runtime, only while searching)
+- **OpenStreetMap** — Map tiles (runtime, cached by the service worker)
+- **Overpass API** — Street network + crossings (build time, `npm run fetch-graph`)
+- **PBOT ArcGIS** — Bike infrastructure data (build time, `npm run fetch-data`)
 
 ### PBOT Infrastructure Tiers
 
-Routes are classified and color-coded: `path` (green, MUPs) → `good` (greenways, buffered lanes) → `lane` (bike lanes) → `caution` (medium/high traffic) → `avoid` (difficult) → `none` (unknown). Per-profile weights in pbot-graph.ts control how aggressively each tier is favored/penalized.
+Routes are classified and color-coded: `path` (green, MUPs) → `good` (greenways, buffered lanes) → `lane` (bike lanes) → `caution` (medium/high traffic) → `avoid` (difficult) → `none` (unknown). Tiers come back with the route from street-graph.ts; per-profile weights there control how aggressively each is favoured or penalised.
 
 ### State Management
 
-Simple centralized state in main.ts (`AppState` with mode, start/end locations, route). Module-level state in navigation.ts (position source, wakeLock), builder, and saved-routes (IndexedDB via `idb` library). Database: "pedalpdx" v3 with savedRoutes, settings, and a legacy edgePreferences store (unused — kept so existing databases open without a version bump). Home address persisted in the settings store.
+Simple centralized state in main.ts (`AppState` with mode, start/end locations, route). The loaded `StreetGraph` is held in router.ts (installed by main.ts once fetched — routing throws a friendly error until then). Module-level state in navigation.ts (position source, wakeLock), builder, and saved-routes (IndexedDB via `idb` library). Database: "pedalpdx" v3 with savedRoutes, settings, and a legacy edgePreferences store (unused — kept so existing databases open without a version bump). Home address persisted in the settings store.
 
 ### Multi-Page Build
 
@@ -89,13 +113,19 @@ Vite PWA plugin generates service worker (Workbox). OSM tiles cached CacheFirst 
 
 Tests use vitest with real PBOT data (integration-style) and run fully offline:
 
-- **`src/pbot-graph.test.ts`** — A* pathfinding for specific Portland routes (Morris greenway crossing, Springwater corridor, no river crossings, no backtracking, one-way handling).
-- **`src/router.test.ts`** — Full safest-mode pipeline (A* + gap resolution + first/last-mile stitching) with BRouter responses replayed from `src/__fixtures__/brouter-fixtures.json`, across a golden-route corpus of 8 city-wide scenarios (`route-scenarios.ts`). Per-scenario invariants: PBOT source used, stitch-boundary continuity, distance/geometry consistency, detour ratio < 2.3× straight-line, ≥70% of coordinates on path/good/lane infrastructure, ≤12% on caution/avoid, instruction well-formedness.
+- **`src/street-graph.test.ts`** — The routing engine against the committed graph artifact, over a golden-route corpus of 8 city-wide scenarios (`route-scenarios.ts`). Per-scenario invariants: endpoints within 150m of the request, continuous geometry, detour ratio < 2.3× straight-line, no doubling back at either end, no riding the wrong way down a one-way, ≥85% of coordinates on path/good/lane infrastructure, ≤8% on caution/avoid, query under 400ms. Plus geography checks (uses the Springwater Corridor, stays east of the Willamette, crosses a bridge when it must).
+- **`src/route-instructions.test.ts`** — Instruction generation: monotonic distances, step distances summing to route length, instructions sitting on the geometry, icon/wording agreement, street names on turns, no instructions closer than 12m.
 - **`src/navigation.test.ts`** — Nav engine driven by scripted positions: instruction advancement, off-route detection, arrival, mid-navigation route swap.
 
-Fixtures are recorded via `npx tsx scripts/record-brouter-fixtures.ts` (hits live brouter.de). If routing changes alter which BRouter requests get made, tests fail with a "missing fixture" message — re-record. Scenarios live in `src/route-scenarios.ts`.
+Tests run against the committed `public/data/street-graph.json`, so rebuilding
+the graph can shift measured numbers. When tuning weights, re-run the tests and
+update the thresholds **from measurement** rather than nudging them until green
+— several bounds carry a comment recording the observed value.
 
-Node-importability: `router.ts` and `navigation.ts` must stay free of browser-only imports (Leaflet values, IndexedDB); browser APIs they touch (speechSynthesis, wake lock) are guarded. BRouter is injected via `setBRouterFetcher()`. Don't add direct imports of `map.ts`/`saved-routes.ts` into router/pbot-graph/navigation/geo/busy-roads.
+Node-importability: `router.ts`, `navigation.ts`, `street-graph.ts` and
+`route-instructions.ts` must stay free of browser-only imports (Leaflet values,
+IndexedDB); browser APIs they touch (speechSynthesis, wake lock) are guarded.
+Don't add direct imports of `map.ts`/`saved-routes.ts` into them.
 
 Gotcha: PBOT edge geometry is simplified at fetch time, so consecutive route coordinates on straight runs can legitimately be 200–800m apart — consecutive-point spacing is not a continuity signal; check `debug.sectionBoundaries` instead.
 

@@ -17,8 +17,8 @@ import {
   displayDebugOverlay,
 } from './map';
 import { RideSimulator, mountSimulatorControls } from './ride-simulator';
-import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile, detectBacktracking } from './router';
-import { classifyRoute } from './pbot-graph';
+import { computeGuidedRoute, computeRouteMulti, ROUTE_PROFILES, setRouteProfile, getRouteProfile, detectBacktracking, setStreetGraph } from './router';
+import { fetchStreetGraph } from './street-graph';
 import type { RouteProfileKey } from './router';
 import { initSearch, reverseGeocode, setSearchBias } from './search';
 import { getCurrentPosition } from './geolocation';
@@ -83,11 +83,18 @@ function init(): void {
     setRouteProfile(urlProfile as RouteProfileKey);
   }
 
-  loadPbotData(map).then(() => {
-    // Route from URL params only after the graph is ready, so safest mode
-    // uses PBOT pathfinding instead of silently falling back to BRouter
-    applyUrlRoute();
-  });
+  // The routing graph is required before any route can be planned; the PBOT
+  // overlay is cosmetic and loads alongside it.
+  loadPbotData(map);
+  fetchStreetGraph(import.meta.env.BASE_URL)
+    .then(graph => {
+      setStreetGraph(graph);
+      applyUrlRoute();
+    })
+    .catch(err => {
+      console.error('[PedalPDX] Could not load routing data:', err);
+      showToast('Could not load map data. Check your connection and reload.');
+    });
 
   map.on('click', (e: L.LeafletMouseEvent) => {
     if (isNavigating()) return;
@@ -487,17 +494,18 @@ async function handleRoute(): Promise<void> {
     if (requestId !== routeRequestId) return;
     state.route = route;
     detectBacktracking(route.coordinates);
-    displayRoute(route.coordinates, classifyRoute(route.coordinates));
+    displayRoute(route.coordinates, route.tiers);
     showRoutePanel(route);
     syncUrlWithRoute();
     if (devDebug && route.debug) {
       displayDebugOverlay(route.debug);
       console.log('[PedalPDX debug] route:', {
         source: route.debug.source,
+        profile: route.debug.profile,
         distance: `${(route.distance / METERS_PER_MILE).toFixed(2)} mi`,
         coords: route.coordinates.length,
-        gapSegments: route.debug.gapSegments.length,
-        stitchPoints: route.debug.stitchPoints,
+        edges: route.debug.steps,
+        snapPoints: route.debug.snapPoints,
       });
       console.table(route.instructions.map(i => ({
         text: i.text, icon: i.icon,
@@ -747,7 +755,7 @@ async function handleSaveRoute(): Promise<void> {
   state.end = L.latLng(last.lat, last.lng);
   setStartMarker(state.start);
   setEndMarker(state.end);
-  displayRoute(route.coordinates, classifyRoute(route.coordinates));
+  displayRoute(route.coordinates, route.tiers);
   showRoutePanel(route);
   resolveAndDisplay('start', first.lat, first.lng);
   resolveAndDisplay('end', last.lat, last.lng);
@@ -838,7 +846,7 @@ async function handleLoadSavedRoute(id: string): Promise<void> {
 
   setStartMarker(state.start);
   setEndMarker(state.end);
-  displayRoute(route.coordinates, classifyRoute(route.coordinates));
+  displayRoute(route.coordinates, route.tiers);
   showRoutePanel(route);
 
   resolveAndDisplay('start', first.lat, first.lng);
@@ -900,7 +908,7 @@ function handleStopNav(): void {
   setPlanningMarkersVisible(true);
 
   if (state.route) {
-    displayRoute(state.route.coordinates, classifyRoute(state.route.coordinates));
+    displayRoute(state.route.coordinates, state.route.tiers);
   }
 }
 
@@ -981,7 +989,7 @@ function maybeReroute(update: NavUpdate): void {
       state.route = route;
       updateRoute(route);
       // Redraw without refitting the viewport — stay locked on the rider
-      displayRoute(route.coordinates, classifyRoute(route.coordinates), false);
+      displayRoute(route.coordinates, route.tiers, false);
       simInstance?.retarget(route);
       announce('Route recalculated.');
     })

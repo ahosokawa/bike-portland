@@ -27,6 +27,13 @@ export interface EncodedGraph {
 
 export type RouteProfile = 'safest' | 'balanced';
 
+/** Fetch and decode the graph artifact shipped in public/data. */
+export async function fetchStreetGraph(baseUrl = '/'): Promise<StreetGraph> {
+  const res = await fetch(`${baseUrl}data/street-graph.json`);
+  if (!res.ok) throw new Error(`Street graph unavailable: ${res.status} ${res.statusText}`);
+  return new StreetGraph(await res.json() as EncodedGraph);
+}
+
 // ========== Cost model ==========
 
 /** Per-meter weight by PBOT ConnectionType (the facility actually present). */
@@ -320,6 +327,11 @@ export class StreetGraph {
   /** OSM highway class of an edge (e.g. "residential", "cycleway"). */
   edgeHighway(e: number): string {
     return this.hws[this.ehw[e]] ?? '';
+  }
+
+  /** Travel restriction: 0 both ways, 1 a→b only, -1 b→a only. */
+  edgeOneway(e: number): number {
+    return this.eoneway[e];
   }
 
   edgeTier(e: number): InfraTier {

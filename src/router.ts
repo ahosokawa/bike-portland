@@ -1,24 +1,26 @@
+// Route planning API used by the app.
+//
+// Routing runs entirely in the browser over the street graph shipped with the
+// app (see street-graph.ts) — no routing server, works offline once loaded.
+
 import type { LatLng } from 'leaflet';
-import type { RouteResult, TurnInstruction, Waypoint, BRouterFeature } from './types';
-import { haversine as hav, computeDistance, bearing, pointToSegProject } from './geo';
-import { findPbotPath } from './pbot-graph';
-import type { PbotEdge, PbotPathResult } from './pbot-graph';
+import type { RouteResult, TurnInstruction, Waypoint } from './types';
+import { haversine as hav, bearing } from './geo';
+import { buildInstructions } from './route-instructions';
+import type { StreetGraph, StreetRoute, RouteProfile } from './street-graph';
 
-const BROUTER_URL = 'https://brouter.de/brouter';
+/** Average cycling speed used for time estimates (~15 km/h). */
+const CYCLING_SPEED = 4.2; // m/s
 
-// Skip BRouter first/last mile if the snap distance is under this threshold —
-// the user is close enough to the PBOT network that a straight walk is fine.
-const SNAP_THRESHOLD = 100; // meters
-
-// Profiles ordered from safest to fastest
 export const ROUTE_PROFILES = {
-  'safest': { profile: 'fastbike-verylowtraffic', label: 'Bike Paths', description: 'Prioritize multi-use paths and trails' },
-  'balanced': { profile: 'fastbike-lowtraffic', label: 'Direct', description: 'Shorter distance, less bike infrastructure' },
+  'safest': { profile: 'safest', label: 'Bike Paths', description: 'Prioritize multi-use paths and trails' },
+  'balanced': { profile: 'balanced', label: 'Direct', description: 'Shorter distance, less bike infrastructure' },
 } as const;
 
 export type RouteProfileKey = keyof typeof ROUTE_PROFILES;
 
 let currentProfile: RouteProfileKey = 'safest';
+let graph: StreetGraph | null = null;
 
 export function setRouteProfile(key: RouteProfileKey): void {
   currentProfile = key;
@@ -28,718 +30,123 @@ export function getRouteProfile(): RouteProfileKey {
   return currentProfile;
 }
 
-// ========== Shared fetch + parse ==========
-
-/** Low-level BRouter request. Swappable via setBRouterFetcher for tests/fixtures. */
-export type BRouterFetcher = (lonlats: string, profile: string) => Promise<BRouterFeature>;
-
-export const httpBRouterFetcher: BRouterFetcher = async (lonlats, profile) => {
-  const params = new URLSearchParams({
-    lonlats,
-    profile,
-    alternativeidx: '0',
-    format: 'geojson',
-    timode: '2', // emit Locus-style voicehints for turn-by-turn instructions
-  });
-
-  const res = await fetch(`${BROUTER_URL}?${params}`, { signal: AbortSignal.timeout(15000) });
-  if (!res.ok) {
-    throw new Error(`Routing failed: ${res.status} ${res.statusText}`);
-  }
-
-  const geojson = await res.json() as { features: BRouterFeature[] };
-  const feature = geojson.features[0];
-  if (!feature) {
-    throw new Error('No route found');
-  }
-  return feature;
-};
-
-let brouterFetcher: BRouterFetcher = httpBRouterFetcher;
-
-/** Replace the BRouter transport (pass null to restore the real HTTP fetcher). */
-export function setBRouterFetcher(fetcher: BRouterFetcher | null): void {
-  brouterFetcher = fetcher ?? httpBRouterFetcher;
+/** Install the loaded street graph. Routing is unavailable until this is called. */
+export function setStreetGraph(g: StreetGraph): void {
+  graph = g;
 }
 
-async function fetchRoute(lonlats: string, profileOverride?: string): Promise<BRouterFeature> {
-  const profile = profileOverride || ROUTE_PROFILES[currentProfile].profile;
-  return brouterFetcher(lonlats, profile);
+export function isRouterReady(): boolean {
+  return graph !== null;
 }
 
-function parseRouteFeature(feature: BRouterFeature): RouteResult {
-  const coords: [number, number][] = feature.geometry.coordinates.map(
-    (c: number[]) => [c[1], c[0]] as [number, number]
-  );
-
-  const elevations: number[] = feature.geometry.coordinates.map(
-    (c: number[]) => c[2] ?? 0
-  );
-
-  const props = feature.properties;
-  const distance = parseFloat(props['track-length'] ?? '') || computeDistance(coords);
-  const time = parseFloat(props['total-time'] ?? '') || Math.round(distance / 4.2);
-  const ascend = parseFloat(props['filtered ascend'] ?? '') || 0;
-  const descend = parseFloat(props['filtered descend'] ?? '') || 0;
-
-  const instructions = parseInstructions(feature);
-
-  return { coordinates: coords, distance, time, elevations, ascend, descend, hasElevation: true, instructions };
+function requireGraph(): StreetGraph {
+  if (!graph) {
+    throw new Error('Map data is still loading. Try again in a moment.');
+  }
+  return graph;
 }
 
-// ========== Public API ==========
-
-export async function computeRoute(start: LatLng, end: LatLng): Promise<RouteResult> {
-  const lonlats = `${start.lng},${start.lat}|${end.lng},${end.lat}`;
-  const feature = await fetchRoute(lonlats);
-  return parseRouteFeature(feature);
-}
-
-/** Fetch raw road geometry between two points using BRouter.
- *  Returns [lat, lng][] coordinates following real roads. */
-export async function fetchRoadGeometry(
-  startLat: number, startLng: number,
-  endLat: number, endLng: number,
-  profile = 'shortest',
-): Promise<[number, number][]> {
-  const lonlats = `${startLng},${startLat}|${endLng},${endLat}`;
-  const feature = await fetchRoute(lonlats, profile);
-  return feature.geometry.coordinates.map(c => [c[1], c[0]] as [number, number]);
-}
-
-/**
- * Route using PBOT bike network A* path for the core (safest profile),
- * with BRouter for first/last mile. "balanced" profile uses pure BRouter.
- */
-export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<RouteResult> {
-  // "Direct" mode — pure BRouter, no PBOT guidance
-  if (currentProfile !== 'safest') {
-    const route = await computeRoute(start, end);
-    route.debug = { source: 'brouter', stitchPoints: [], gapSegments: [], sectionBoundaries: [] };
-    return route;
-  }
-
-  const pbotPath = findPbotPath(start.lat, start.lng, end.lat, end.lng, 'safest');
-  if (!pbotPath) {
-    const route = await computeRoute(start, end);
-    route.debug = { source: 'brouter', stitchPoints: [], gapSegments: [], sectionBoundaries: [] };
-    return route;
-  }
-
-  // Trim trailing (and leading) edges whose geometry loops back on itself
-  // (e.g. switchback ramps in the I-205 corridor). BRouter handles the
-  // last/first mile from the trimmed endpoint much more cleanly.
-  trimLoopyEdges(pbotPath);
-
-  // A* snaps endpoints to the nearest graph node, which can sit past the
-  // destination along the direction of travel — riders would be told to
-  // pass their destination and double back. Cut the path at its closest
-  // approach instead (same for the start).
-  trimEndOvershoot(pbotPath, end.lat, end.lng);
-  trimStartOvershoot(pbotPath, start.lat, start.lng);
-
-  // Replace straight-line gap edges with real road geometry from BRouter
-  await resolveGapEdges(pbotPath.edges);
-
-  const pbotRoute = buildRouteFromPbotPath(pbotPath);
-
-  // Fetch first-mile and last-mile BRouter segments in parallel
-  const needFirstMile = pbotPath.startSnapDist > SNAP_THRESHOLD;
-  const needLastMile = pbotPath.endSnapDist > SNAP_THRESHOLD;
-
-  const [firstMile, lastMile] = await Promise.all([
-    needFirstMile
-      ? computeRoute(start, { lat: pbotPath.startNode.lat, lng: pbotPath.startNode.lng } as LatLng)
-          .catch(() => null)
-      : null,
-    needLastMile
-      ? computeRoute({ lat: pbotPath.endNode.lat, lng: pbotPath.endNode.lng } as LatLng, end)
-          .catch(() => null)
-      : null,
-  ]);
-
-  const stitched = stitchRoutes(start, end, firstMile, pbotRoute, lastMile);
-  stitched.debug!.stitchPoints = [
-    { label: firstMile ? 'PBOT entry (BRouter first mile ends)' : 'PBOT entry (direct)', latlng: [pbotPath.startNode.lat, pbotPath.startNode.lng] },
-    { label: lastMile ? 'PBOT exit (BRouter last mile starts)' : 'PBOT exit (direct)', latlng: [pbotPath.endNode.lat, pbotPath.endNode.lng] },
-  ];
-  stitched.debug!.gapSegments = pbotPath.edges.filter(e => e.ct.startsWith('_')).map(e => e.coords);
-  return stitched;
-}
-
-/**
- * Remove trailing/leading edges with geometry that loops back on itself
- * (path length >> straight-line distance). These occur at MUP ramp connections
- * where PBOT geometry doubles back. Trimming them lets BRouter handle the
- * last/first mile from a cleaner anchor point on the main path.
- *
- * Also removes gap edges adjacent to a trimmed loopy edge, since they
- * connect to the same awkward corridor location.
- */
-function trimLoopyEdges(path: PbotPathResult): void {
-  const LOOP_RATIO = 2.5;
-
-  function isLoopy(edge: PbotEdge): boolean {
-    if (edge.coords.length <= 2) return false;
-    const straight = hav(edge.coords[0], edge.coords[edge.coords.length - 1]);
-    return edge.distance > straight * LOOP_RATIO;
-  }
-
-  // Trim from the end — only remove loopy edges (keep gap edges so the
-  // endpoint stays close to the actual path exit)
-  let trimmed = false;
-  while (path.edges.length > 1 && isLoopy(path.edges[path.edges.length - 1])) {
-    path.edges.pop();
-    trimmed = true;
-  }
-  if (trimmed) {
-    const last = path.edges[path.edges.length - 1];
-    const c = last.coords[last.coords.length - 1];
-    path.endNode = { lat: c[0], lng: c[1] };
-    path.endSnapDist = SNAP_THRESHOLD + 1; // force BRouter last mile
-  }
-
-  // Trim from the start
-  trimmed = false;
-  while (path.edges.length > 1 && isLoopy(path.edges[0])) {
-    path.edges.shift();
-    trimmed = true;
-  }
-  if (trimmed) {
-    const first = path.edges[0];
-    path.startNode = { lat: first.coords[0][0], lng: first.coords[0][1] };
-    path.startSnapDist = SNAP_THRESHOLD + 1;
-  }
-}
-
-// Only trim an overshoot when it removes at least this much ridden-past path
-const OVERSHOOT_MIN_TRIM = 15; // meters
-
-/** Cut the path's tail at its closest approach to the destination. */
-function trimEndOvershoot(path: PbotPathResult, endLat: number, endLng: number): void {
-  const dest: [number, number] = [endLat, endLng];
-  const startEdge = Math.max(0, path.edges.length - 2); // tail = last 2 edges
-  let best: { ei: number; si: number; point: [number, number]; d: number } | null = null;
-
-  for (let ei = startEdge; ei < path.edges.length; ei++) {
-    const cs = path.edges[ei].coords;
-    for (let si = 0; si < cs.length - 1; si++) {
-      const r = pointToSegProject(dest, cs[si], cs[si + 1]);
-      if (!best || r.distance < best.d) best = { ei, si, point: r.closest, d: r.distance };
-    }
-  }
-  if (!best) return;
-
-  // Path length that would be removed: projection → end of its edge, plus
-  // any following edges. Trim only if the rider actually rides past.
-  const bestEdgeCoords = path.edges[best.ei].coords;
-  let removedLen = computeDistance([best.point, ...bestEdgeCoords.slice(best.si + 1)]);
-  for (let ei = best.ei + 1; ei < path.edges.length; ei++) {
-    removedLen += path.edges[ei].distance;
-  }
-  if (removedLen < OVERSHOOT_MIN_TRIM) return;
-
-  const edge = path.edges[best.ei];
-  const newCoords = edge.coords.slice(0, best.si + 1);
-  if (hav(newCoords[newCoords.length - 1], best.point) > 1) newCoords.push(best.point);
-  path.edges = path.edges.slice(0, best.ei + 1);
-  if (newCoords.length >= 2) {
-    edge.coords = newCoords;
-    edge.distance = computeDistance(newCoords);
-  } else {
-    path.edges.pop();
-  }
-  if (path.edges.length === 0) return;
-
-  const last = path.edges[path.edges.length - 1];
-  const c = last.coords[last.coords.length - 1];
-  path.endNode = { lat: c[0], lng: c[1] };
-  path.endSnapDist = hav(c, dest);
-}
-
-/** Cut the path's head at its closest approach to the start point. */
-function trimStartOvershoot(path: PbotPathResult, startLat: number, startLng: number): void {
-  const src: [number, number] = [startLat, startLng];
-  const endEdge = Math.min(path.edges.length, 2); // head = first 2 edges
-  let best: { ei: number; si: number; point: [number, number]; d: number } | null = null;
-
-  for (let ei = 0; ei < endEdge; ei++) {
-    const cs = path.edges[ei].coords;
-    for (let si = 0; si < cs.length - 1; si++) {
-      const r = pointToSegProject(src, cs[si], cs[si + 1]);
-      if (!best || r.distance < best.d) best = { ei, si, point: r.closest, d: r.distance };
-    }
-  }
-  if (!best) return;
-
-  // Path length that would be removed: start of path → projection point
-  const bestEdgeCoords = path.edges[best.ei].coords;
-  let removedLen = computeDistance([...bestEdgeCoords.slice(0, best.si + 1), best.point]);
-  for (let ei = 0; ei < best.ei; ei++) {
-    removedLen += path.edges[ei].distance;
-  }
-  if (removedLen < OVERSHOOT_MIN_TRIM) return;
-
-  const edge = path.edges[best.ei];
-  // Keep the segment tail from the projection onward (si+1 .. end)
-  const newCoords = edge.coords.slice(best.si + 1);
-  if (newCoords.length === 0 || hav(newCoords[0], best.point) > 1) newCoords.unshift(best.point);
-  path.edges = path.edges.slice(best.ei);
-  if (newCoords.length >= 2) {
-    edge.coords = newCoords;
-    edge.distance = computeDistance(newCoords);
-  } else {
-    path.edges.shift();
-  }
-  if (path.edges.length === 0) return;
-
-  const c = path.edges[0].coords[0];
-  path.startNode = { lat: c[0], lng: c[1] };
-  path.startSnapDist = hav(c, src);
-}
-
-/** Replace straight-line gap-bridge edge coords with real road geometry. */
-async function resolveGapEdges(edges: PbotEdge[]): Promise<void> {
-  const gapIndices = edges
-    .map((e, i) => e.ct.startsWith('_GAP') ? i : -1)
-    .filter(i => i >= 0);
-
-  if (gapIndices.length === 0) return;
-
-  const results = await Promise.all(
-    gapIndices.map(i => {
-      const e = edges[i];
-      const start = e.coords[0];
-      const end = e.coords[e.coords.length - 1];
-      // Use bike profile to avoid highway ramps/one-way car streets near bridges
-      return fetchRoadGeometry(start[0], start[1], end[0], end[1], 'fastbike-lowtraffic').catch(() => null);
-    }),
-  );
-
-  for (let j = 0; j < gapIndices.length; j++) {
-    if (results[j] && results[j]!.length >= 2) {
-      const resolved = results[j]!;
-      const edge = edges[gapIndices[j]];
-
-      // Reject resolved geometry that loops excessively — if the road
-      // distance is more than 3x the straight-line gap, the resolution
-      // likely routed through highway ramps or one-way streets.
-      const resolvedDist = computeDistance(resolved);
-      if (resolvedDist > edge.distance * 3) continue;
-
-      // Snap resolved endpoints to original PBOT node positions so edges
-      // connect cleanly when concatenated in buildRouteFromPbotPath
-      // (which skips index 0 of subsequent edges assuming endpoint match).
-      resolved[0] = edge.coords[0];
-      resolved[resolved.length - 1] = edge.coords[edge.coords.length - 1];
-      edge.coords = resolved;
-    }
-  }
-}
-
-export async function computeRouteMulti(waypoints: Waypoint[], profileOverride?: string): Promise<RouteResult> {
-  if (waypoints.length < 2) throw new Error('Need at least 2 waypoints');
-  const lonlats = waypoints.map(w => `${w.lng},${w.lat}`).join('|');
-  const feature = await fetchRoute(lonlats, profileOverride);
-  return parseRouteFeature(feature);
-}
-
-// ========== PBOT edge name cleaning ==========
-
-/** Words that should stay fully uppercase in title-cased street names. */
-const KEEP_UPPER = /^(NE|NW|SE|SW|N|S|E|W|US|OR|ST|AVE|BLVD|DR|RD|CT|PL|LN|HWY|PKWY|WAY|BRG|MUP)$/i;
-
-/** Clean PBOT edge name for display in directions.
- *  Returns empty string if the name isn't useful for navigation. */
-export function cleanEdgeName(raw: string): string {
-  if (!raw) return '';
-  if (/\bI-?\d+\s*(FWY|HWY)/i.test(raw)) return '';
-  if (/\bRAMP\b/i.test(raw)) return '';
-  const mupMatch = raw.match(/I-?(\d+)\s*MULTI\s*USE\s*(PATH|TRAIL)/i);
-  if (mupMatch) return `I-${mupMatch[1]} Path`;
-  if (/SPRINGWATER\s+CORRIDOR/i.test(raw)) return 'Springwater Corridor';
-  return raw.replace(/\b\w+/g, (w) => {
-    if (KEEP_UPPER.test(w)) return w.toUpperCase();
-    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-  });
-}
-
-// ========== PBOT path → RouteResult ==========
-
-function buildRouteFromPbotPath(path: PbotPathResult): RouteResult {
-  // Concatenate edge coordinates, deduplicating shared junction points
-  const coordinates: [number, number][] = [];
-  for (const edge of path.edges) {
-    const start = coordinates.length === 0 ? 0 : 1; // skip first point of subsequent edges (same as prev edge's last)
-    for (let i = start; i < edge.coords.length; i++) {
-      coordinates.push(edge.coords[i]);
-    }
-  }
-
-  const distance = computeDistance(coordinates);
-  const time = Math.round(distance / 4.2); // ~15 km/h average cycling speed
-  const elevations = coordinates.map(() => 0); // PBOT data has no elevation
-  const instructions = generatePbotInstructions(path.edges, coordinates, distance);
-
-  return { coordinates, distance, time, elevations, ascend: 0, descend: 0, hasElevation: false, instructions };
-}
-
-function generatePbotInstructions(edges: PbotEdge[], coordinates: [number, number][], totalDistance: number): TurnInstruction[] {
-  if (coordinates.length < 2) return [];
-
-  const instructions: TurnInstruction[] = [];
-  let cumulativeDist = 0;
-  let stepDist = 0; // distance accumulated since the last emitted instruction
-
-  const startName = cleanEdgeName(edges[0].name);
-  instructions.push({
-    text: startName ? `Start on ${startName}` : 'Start your ride',
-    distance: 0,
-    stepDistance: 0,
-    icon: 'start',
-    latlng: coordinates[0],
-  });
-
-  // Track the "effective" previous name for merging consecutive edges
-  let prevEffectiveName = startName;
-
-  for (let i = 1; i < edges.length; i++) {
-    cumulativeDist += edges[i - 1].distance;
-    stepDist += edges[i - 1].distance;
-    const cur = edges[i];
-    const curName = cleanEdgeName(cur.name);
-
-    // Skip if the cleaned name hasn't changed
-    if (curName && curName === prevEffectiveName) continue;
-
-    // Skip edges without a useful name — don't emit bare "Turn left" / "Continue"
-    if (!curName) continue;
-
-    const turnType = computeTurnType(edges[i - 1], cur);
-    instructions.push({
-      text: `${turnType} onto ${curName}`,
-      distance: cumulativeDist,
-      stepDistance: stepDist,
-      icon: turnTypeIcon(turnType),
-      latlng: cur.coords[0],
-    });
-
-    prevEffectiveName = curName;
-    stepDist = 0;
-  }
-
-  // Account for remaining edges after last instruction
-  stepDist += edges[edges.length - 1].distance;
-
-  instructions.push({
-    text: 'Arrive at destination',
-    distance: totalDistance,
-    stepDistance: stepDist,
-    icon: 'arrive',
-    latlng: coordinates[coordinates.length - 1],
-  });
-
-  return instructions;
-}
-
-/** Compute the turn direction between two consecutive edges using bearing difference. */
-function computeTurnType(prev: PbotEdge, cur: PbotEdge): string {
-  const prevCoords = prev.coords;
-  const curCoords = cur.coords;
-
-  // Use the last segment of prev edge and first segment of cur edge
-  const a = prevCoords.length >= 2 ? prevCoords[prevCoords.length - 2] : prevCoords[0];
-  const b = prevCoords[prevCoords.length - 1]; // junction point
-  const c = curCoords.length >= 2 ? curCoords[1] : curCoords[0];
-
-  const bearingIn = bearing(a, b);
-  const bearingOut = bearing(b, c);
-  let diff = bearingOut - bearingIn;
-  // Normalize to -180..180
-  while (diff > 180) diff -= 360;
-  while (diff < -180) diff += 360;
-
-  if (Math.abs(diff) < 30) return 'Continue';
-  if (diff >= 30 && diff < 150) return 'Turn right';
-  if (diff <= -30 && diff > -150) return 'Turn left';
-  return 'Make a U-turn';
-}
-
-function turnTypeIcon(turnType: string): string {
-  if (turnType.includes('right')) return 'turn-right';
-  if (turnType.includes('left')) return 'turn-left';
-  if (turnType.includes('U-turn')) return 'u-turn';
-  return 'continue';
-}
-
-// ========== Route stitching ==========
-
-function stitchRoutes(
-  start: LatLng,
-  end: LatLng,
-  firstMile: RouteResult | null,
-  pbotRoute: RouteResult,
-  lastMile: RouteResult | null,
-): RouteResult {
-  const coordinates: [number, number][] = [];
-  const elevations: number[] = [];
-  const instructions: TurnInstruction[] = [];
-  const sectionBoundaries: number[] = [];
-  let distance = 0;
-  let ascend = 0;
-  let descend = 0;
-
-  // First mile (BRouter: start → PBOT network entry)
-  if (firstMile) {
-    coordinates.push(...firstMile.coordinates);
-    elevations.push(...firstMile.elevations);
-    instructions.push(...firstMile.instructions.filter(i => i.icon !== 'arrive'));
-    distance += firstMile.distance;
-    ascend += firstMile.ascend;
-    descend += firstMile.descend;
-  } else {
-    // Direct line from start to first PBOT coord
-    const startCoord: [number, number] = [start.lat, start.lng];
-    coordinates.push(startCoord);
-    elevations.push(0);
-    const firstPbotCoord = pbotRoute.coordinates[0];
-    const startGap = firstPbotCoord ? hav(startCoord, firstPbotCoord) : 0;
-    distance += startGap;
-  }
-
-  // PBOT core — skip its first coordinate only if it actually duplicates the
-  // previous point. BRouter snaps its endpoint to the nearest OSM way, which
-  // can sit tens of meters from the PBOT node; dropping the node in that case
-  // widens the visual disconnect at the junction.
-  if (firstMile) sectionBoundaries.push(coordinates.length);
-  const prevCoord = coordinates[coordinates.length - 1];
-  const pbotStart =
-    pbotRoute.coordinates.length > 0 && prevCoord && hav(prevCoord, pbotRoute.coordinates[0]) < 5
-      ? 1 : 0;
-  for (let i = pbotStart; i < pbotRoute.coordinates.length; i++) {
-    coordinates.push(pbotRoute.coordinates[i]);
-    elevations.push(0);
-  }
-  // Adjust PBOT instructions' cumulative distances
-  const distOffset = distance;
-  for (const inst of pbotRoute.instructions) {
-    if (inst.icon === 'arrive' && lastMile) continue; // skip intermediate arrive
-    if (inst.icon === 'start' && firstMile) continue; // skip intermediate start
-    instructions.push({
-      ...inst,
-      distance: inst.distance + distOffset,
-    });
-  }
-  distance += pbotRoute.distance;
-
-  // Last mile (BRouter: PBOT network exit → end)
-  if (lastMile) {
-    sectionBoundaries.push(coordinates.length);
-    // Same dedupe rule as the first-mile→core junction above
-    const lastPrev = coordinates[coordinates.length - 1];
-    const lastStart =
-      lastMile.coordinates.length > 0 && lastPrev && hav(lastPrev, lastMile.coordinates[0]) < 5
-        ? 1 : 0;
-    for (let i = lastStart; i < lastMile.coordinates.length; i++) {
-      coordinates.push(lastMile.coordinates[i]);
-      elevations.push(lastMile.elevations[i] ?? 0);
-    }
-    const lastOffset = distance;
-    for (const inst of lastMile.instructions) {
-      if (inst.icon === 'start') continue;
-      instructions.push({
-        ...inst,
-        distance: inst.distance + lastOffset,
-      });
-    }
-    distance += lastMile.distance;
-    ascend += lastMile.ascend;
-    descend += lastMile.descend;
-  } else {
-    // No BRouter last mile — add a straight-line segment from PBOT exit to destination
-    const endCoord: [number, number] = [end.lat, end.lng];
-    const lastPbotCoord = coordinates[coordinates.length - 1];
-    const gapDist = lastPbotCoord ? hav(lastPbotCoord, endCoord) : 0;
-    if (gapDist > 5) {
-      coordinates.push(endCoord);
-      elevations.push(0);
-      distance += gapDist;
-    }
-    // Ensure we have an arrive instruction
-    const last = instructions[instructions.length - 1];
-    if (!last || !last.text.toLowerCase().includes('arrive')) {
-      instructions.push({
-        text: 'Arrive at destination',
-        distance,
-        stepDistance: gapDist,
-        icon: 'arrive',
-        latlng: endCoord,
-      });
-    }
-  }
-
-  const time = Math.round(distance / 4.2);
+/** Convert an engine route into the shape the app renders and navigates. */
+function toRouteResult(g: StreetGraph, route: StreetRoute, profile: RouteProfileKey): RouteResult {
+  const instructions = buildInstructions(g, route);
   return {
-    coordinates, distance, time, elevations, ascend, descend, hasElevation: false, instructions,
-    debug: { source: 'pbot+brouter', stitchPoints: [], gapSegments: [], sectionBoundaries },
+    coordinates: route.coordinates,
+    tiers: route.tiers,
+    distance: route.distance,
+    time: Math.round(route.distance / CYCLING_SPEED),
+    // No elevation in the graph yet — the profile chart stays hidden.
+    elevations: route.coordinates.map(() => 0),
+    ascend: 0,
+    descend: 0,
+    hasElevation: false,
+    instructions,
+    debug: {
+      source: 'street-graph',
+      profile,
+      steps: route.steps.length,
+      snapPoints: [
+        { label: `start on ${g.edgeName(route.steps[0].edge) || 'unnamed way'}`, latlng: route.coordinates[0] },
+        {
+          label: `end on ${g.edgeName(route.steps[route.steps.length - 1].edge) || 'unnamed way'}`,
+          latlng: route.coordinates[route.coordinates.length - 1],
+        },
+      ],
+    },
   };
 }
 
-// ========== Instructions parsing (BRouter) ==========
-
-// Locus-style voicehint commands (timode=2). Command 1 (continue straight)
-// is emitted at every through-junction and is filtered out as noise.
-const VOICEHINT_COMMANDS: Record<number, { text: string; icon: string }> = {
-  2:  { text: 'Turn left', icon: 'turn-left' },
-  3:  { text: 'Slight left', icon: 'turn-left' },
-  4:  { text: 'Sharp left', icon: 'turn-left' },
-  5:  { text: 'Turn right', icon: 'turn-right' },
-  6:  { text: 'Slight right', icon: 'turn-right' },
-  7:  { text: 'Sharp right', icon: 'turn-right' },
-  8:  { text: 'Keep left', icon: 'turn-left' },
-  9:  { text: 'Keep right', icon: 'turn-right' },
-  10: { text: 'Make a U-turn', icon: 'u-turn' },
-  11: { text: 'Make a U-turn', icon: 'u-turn' },
-  13: { text: 'Take the roundabout', icon: 'continue' },
-  14: { text: 'Take the roundabout', icon: 'continue' },
-};
-
-/** Build turn instructions from BRouter voicehints (timode=2). */
-function parseVoiceHints(feature: BRouterFeature, hints: number[][]): TurnInstruction[] {
-  const coords = feature.geometry.coordinates;
-  if (coords.length < 2) return [];
-
-  // Cumulative distance along the geometry, for hint positioning
-  const cum: number[] = [0];
-  for (let i = 1; i < coords.length; i++) {
-    cum.push(cum[i - 1] + hav([coords[i - 1][1], coords[i - 1][0]], [coords[i][1], coords[i][0]]));
+/** Plan a route between two points using the current profile. */
+export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<RouteResult> {
+  const g = requireGraph();
+  const route = g.route(
+    { lat: start.lat, lng: start.lng },
+    { lat: end.lat, lng: end.lng },
+    ROUTE_PROFILES[currentProfile].profile as RouteProfile,
+  );
+  if (!route) {
+    throw new Error('No bike route found between those points');
   }
-  const total = parseFloat(feature.properties?.['track-length'] ?? '') || cum[cum.length - 1];
-
-  const instructions: TurnInstruction[] = [
-    { text: 'Start your ride', distance: 0, stepDistance: 0, icon: 'start', latlng: [coords[0][1], coords[0][0]] },
-  ];
-
-  let prevDist = 0;
-  for (const hint of hints) {
-    const [idx, command] = hint;
-    const mapped = VOICEHINT_COMMANDS[command];
-    if (!mapped) continue; // skip straight-through hints and unknown commands
-    if (idx < 0 || idx >= coords.length) continue;
-
-    const distance = cum[idx];
-    instructions.push({
-      text: mapped.text,
-      distance,
-      stepDistance: distance - prevDist,
-      icon: mapped.icon,
-      latlng: [coords[idx][1], coords[idx][0]],
-    });
-    prevDist = distance;
-  }
-
-  instructions.push({
-    text: 'Arrive at destination',
-    distance: total,
-    stepDistance: total - prevDist,
-    icon: 'arrive',
-    latlng: [coords[coords.length - 1][1], coords[coords.length - 1][0]],
-  });
-
-  return instructions;
+  return toRouteResult(g, route, currentProfile);
 }
 
-function parseInstructions(feature: BRouterFeature): TurnInstruction[] {
-  const voicehints = feature.properties?.voicehints;
-  if (voicehints && voicehints.length > 0) {
-    return parseVoiceHints(feature, voicehints);
-  }
+/** Plan a route visiting each waypoint in order (custom saved routes). */
+export async function computeRouteMulti(
+  waypoints: Waypoint[],
+  profileOverride?: string,
+): Promise<RouteResult> {
+  if (waypoints.length < 2) throw new Error('Need at least 2 waypoints');
+  const g = requireGraph();
+  const profile = (profileOverride === 'balanced' ? 'balanced' : 'safest') as RouteProfile;
 
+  const coordinates: [number, number][] = [];
+  const tiers: RouteResult['tiers'] = [];
   const instructions: TurnInstruction[] = [];
-  const messages = feature.properties?.messages;
+  let distance = 0;
 
-  if (!messages || messages.length < 2) {
-    return generateBasicInstructions(feature);
-  }
+  for (let i = 1; i < waypoints.length; i++) {
+    const leg = g.route(waypoints[i - 1], waypoints[i], profile);
+    if (!leg) throw new Error(`No bike route found to waypoint ${i + 1}`);
 
-  const headers: string[] = messages[0];
-  const lonIdx = headers.indexOf('Longitude');
-  const latIdx = headers.indexOf('Latitude');
-  const dirIdx = headers.indexOf('Direction');
-  const msgIdx = headers.indexOf('Message');
-  const distIdx = headers.indexOf('Distance');
-
-  let cumulativeDist = 0;
-
-  for (let i = 1; i < messages.length; i++) {
-    const row = messages[i];
-    const direction = dirIdx >= 0 ? row[dirIdx] : '';
-    const message = msgIdx >= 0 ? row[msgIdx] : '';
-    const stepDist = distIdx >= 0 ? parseFloat(row[distIdx]) : 0;
-    const lon = lonIdx >= 0 ? parseFloat(row[lonIdx]) / 1e6 : 0;
-    const lat = latIdx >= 0 ? parseFloat(row[latIdx]) / 1e6 : 0;
-
-    cumulativeDist += stepDist;
-
-    if (!message && i > 1) continue;
-
-    instructions.push({
-      text: message || 'Start',
-      distance: cumulativeDist,
-      stepDistance: stepDist,
-      icon: i === 1 ? 'start' : directionIcon(direction),
-      latlng: [lat, lon],
-    });
-  }
-
-  if (instructions.length > 0) {
-    const last = instructions[instructions.length - 1];
-    if (!last.text.toLowerCase().includes('arrive') && !last.text.toLowerCase().includes('destination')) {
-      const endCoord = feature.geometry.coordinates[feature.geometry.coordinates.length - 1];
-      instructions.push({
-        text: 'Arrive at destination',
-        distance: parseFloat(feature.properties?.['track-length'] ?? '') || cumulativeDist,
-        stepDistance: 0,
-        icon: 'arrive',
-        latlng: [endCoord[1], endCoord[0]],
-      });
+    // Renumber this leg's instructions onto the running total, dropping the
+    // intermediate "start"/"arrive" pair at each join.
+    const legInstructions = buildInstructions(g, leg);
+    const isFirst = i === 1;
+    const isLast = i === waypoints.length - 1;
+    for (const inst of legInstructions) {
+      if (inst.icon === 'start' && !isFirst) continue;
+      if (inst.icon === 'arrive' && !isLast) continue;
+      instructions.push({ ...inst, distance: inst.distance + distance });
     }
+
+    const skip = coordinates.length > 0 && leg.coordinates.length > 0
+      && hav(coordinates[coordinates.length - 1], leg.coordinates[0]) < 1 ? 1 : 0;
+    for (let j = skip; j < leg.coordinates.length; j++) {
+      coordinates.push(leg.coordinates[j]);
+      tiers.push(leg.tiers[j]);
+    }
+    distance += leg.distance;
   }
 
-  return instructions;
+  return {
+    coordinates,
+    tiers,
+    distance,
+    time: Math.round(distance / CYCLING_SPEED),
+    elevations: coordinates.map(() => 0),
+    ascend: 0,
+    descend: 0,
+    hasElevation: false,
+    instructions,
+    debug: { source: 'street-graph', profile: currentProfile, steps: 0, snapPoints: [] },
+  };
 }
 
-function generateBasicInstructions(feature: BRouterFeature): TurnInstruction[] {
-  const coords = feature.geometry.coordinates;
-  if (!coords || coords.length < 2) return [];
+// ========== Backtracking detection (dev diagnostic) ==========
 
-  const totalDist = parseFloat(feature.properties?.['track-length'] ?? '') || 0;
-  const start = coords[0];
-  const end = coords[coords.length - 1];
-  return [
-    { text: 'Start your ride', distance: 0, stepDistance: 0, icon: 'start', latlng: [start[1], start[0]] },
-    { text: 'Follow the route', distance: totalDist, stepDistance: totalDist, icon: 'continue', latlng: [end[1], end[0]] },
-    { text: 'Arrive at destination', distance: totalDist, stepDistance: 0, icon: 'arrive', latlng: [end[1], end[0]] },
-  ];
-}
-
-function directionIcon(direction: string): string {
-  const d = direction?.toUpperCase() || '';
-  if (d.includes('LEFT') || d === 'TL') return 'turn-left';
-  if (d.includes('RIGHT') || d === 'TR') return 'turn-right';
-  if (d.includes('STRAIGHT') || d === 'C') return 'straight';
-  if (d.includes('U-TURN') || d === 'TU') return 'u-turn';
-  return 'continue';
-}
-
-// ========== Backtracking detection (diagnostic) ==========
-
-/** Detect bearing reversals in a route for debugging.
- *  Logs warnings for segments where the route doubles back. */
+/** Warn in development when a route doubles back on itself. */
 export function detectBacktracking(coords: [number, number][]): void {
   if (coords.length < 3) return;
 
-  // Sample bearings at ~100m intervals to avoid noise from small wiggles
   const samples: { bearing: number; idx: number }[] = [];
   let accumDist = 0;
   let lastSampleIdx = 0;
@@ -755,7 +162,7 @@ export function detectBacktracking(coords: [number, number][]): void {
   for (let i = 1; i < samples.length; i++) {
     let diff = Math.abs(samples[i].bearing - samples[i - 1].bearing);
     if (diff > 180) diff = 360 - diff;
-    if (diff > 120 && import.meta.env.DEV) {
+    if (diff > 120 && import.meta.env?.DEV) {
       console.warn(
         `[PedalPDX] Possible backtracking at coord index ${samples[i].idx}: ` +
         `bearing changed ${diff.toFixed(0)}° (${samples[i - 1].bearing.toFixed(0)}° → ${samples[i].bearing.toFixed(0)}°)`

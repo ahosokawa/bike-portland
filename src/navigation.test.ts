@@ -46,6 +46,7 @@ function makeRoute(): RouteResult {
   ];
   return {
     coordinates,
+    tiers: coordinates.map(() => 'lane' as const),
     distance: total,
     time: Math.round(total / 4.2),
     elevations: coordinates.map(() => 0),

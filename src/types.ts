@@ -1,30 +1,29 @@
 import type { LatLng } from 'leaflet';
 
+import type { InfraTier } from './street-graph';
+
 export interface RouteResult {
   coordinates: [number, number][]; // [lat, lng]
+  /** Bike-infrastructure tier per coordinate, for colour-coded rendering. */
+  tiers: InfraTier[];
   distance: number; // meters
   time: number; // seconds
   elevations: number[]; // meters, one per coordinate
   ascend: number; // total meters gained
   descend: number; // total meters descended
-  hasElevation: boolean; // true if elevation data is real (BRouter), false if unavailable (PBOT-only)
+  hasElevation: boolean; // false until the graph carries elevation data
   instructions: TurnInstruction[];
   debug?: RouteDebugInfo; // populated for dev inspection (?debug=1)
 }
 
-/** Internals of how a route was assembled, for the dev debug overlay. */
+/** How a route was produced, for the dev debug overlay. */
 export interface RouteDebugInfo {
-  source: 'pbot+brouter' | 'brouter';
-  /** PBOT network entry/exit where BRouter segments are stitched on. */
-  stitchPoints: { label: string; latlng: [number, number] }[];
-  /** Geometry of synthetic gap/preference edges (after BRouter resolution). */
-  gapSegments: [number, number][][];
-  /**
-   * Coordinate indices where independently computed sections join
-   * (first-mile→core, core→last-mile). coords[i-1] and coords[i] at each
-   * index i come from different sources and must be adjacent on the ground.
-   */
-  sectionBoundaries: number[];
+  source: 'street-graph';
+  profile: string;
+  /** Number of graph edges traversed. */
+  steps: number;
+  /** Where the requested points snapped onto the network. */
+  snapPoints: { label: string; latlng: [number, number] }[];
 }
 
 export interface TurnInstruction {

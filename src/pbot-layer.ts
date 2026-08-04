@@ -1,6 +1,4 @@
 import L from 'leaflet';
-import { buildGraph } from './pbot-graph';
-import { indexBusyRoads } from './busy-roads';
 
 let pbotLayer: L.GeoJSON | null = null;
 let visible = false;
@@ -46,24 +44,13 @@ function classifyConnection(connectionType: string | null | undefined): Tier {
   return 'caution';
 }
 
+/** Load the PBOT bike network purely as a visual overlay (routing uses the
+ *  street graph, which already carries these attributes on its edges). */
 export async function loadPbotData(map: L.Map): Promise<void> {
   try {
-    const [res, busyRes] = await Promise.all([
-      fetch(import.meta.env.BASE_URL + 'data/pbot-routes.geojson'),
-      fetch(import.meta.env.BASE_URL + 'data/busy-roads.geojson').catch(() => null),
-    ]);
-
-    // Index busy roads first — needed by buildGraph's gap bridge cost calculation
-    if (busyRes?.ok) {
-      const busyGeojson = await busyRes.json();
-      indexBusyRoads(busyGeojson);
-    }
-
+    const res = await fetch(import.meta.env.BASE_URL + 'data/pbot-routes.geojson');
     if (!res.ok) return;
     const geojson = await res.json();
-
-    // Build routing graph from PBOT data for guided waypoint routing
-    buildGraph(geojson);
 
     pbotLayer = L.geoJSON(geojson, {
       style: (feature) => {
