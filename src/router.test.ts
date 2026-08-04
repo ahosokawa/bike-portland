@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import type { LatLng } from 'leaflet';
-import { buildGraph } from './pbot-graph';
+import { buildGraph, classifyRoute } from './pbot-graph';
 import { indexBusyRoads } from './busy-roads';
 import {
   computeGuidedRoute,
@@ -107,6 +107,25 @@ describe.each(safestScenarios)('computeGuidedRoute: $name', (scenario) => {
     expect(route.elevations.length).toBe(route.coordinates.length);
   });
 
+  it('does not detour absurdly', async () => {
+    const route = await computeScenario(scenario);
+    const straight = haversine([scenario.from.lat, scenario.from.lng], [scenario.to.lat, scenario.to.lng]);
+    // Observed ratios across the corpus: 1.17–2.09 (max = Springwater-heavy
+    // Zoiglhaus route, a deliberate bike-path detour)
+    expect(route.distance / straight).toBeLessThan(2.3);
+    expect(route.distance).toBeGreaterThan(straight * 0.95);
+  });
+
+  it('spends most of the ride on real bike infrastructure', async () => {
+    const route = await computeScenario(scenario);
+    const tiers = classifyRoute(route.coordinates);
+    const share = (want: string[]) =>
+      tiers.filter(t => want.includes(t)).length / tiers.length;
+    // Observed: 80–98% on path/good/lane, ≤10% on caution/avoid
+    expect(share(['path', 'good', 'lane'])).toBeGreaterThan(0.7);
+    expect(share(['caution', 'avoid'])).toBeLessThan(0.12);
+  });
+
   it('has well-formed instructions', async () => {
     const route = await computeScenario(scenario);
     const inst = route.instructions;
@@ -138,6 +157,21 @@ describe('computeGuidedRoute: balanced profile (pure BRouter)', () => {
     expect(route.hasElevation).toBe(true);
     expect(route.elevations.length).toBe(route.coordinates.length);
     expect(route.coordinates.length).toBeGreaterThan(50);
+  });
+
+  it('produces real turn-by-turn instructions from voicehints', async () => {
+    const route = await computeScenario(scenario);
+    // Regression guard: without timode=2 voicehints, a 2.6mi urban route
+    // yielded only start + arrive — useless for riding
+    expect(route.instructions.length).toBeGreaterThan(8);
+    const turns = route.instructions.filter(i => i.icon === 'turn-left' || i.icon === 'turn-right');
+    expect(turns.length).toBeGreaterThan(4);
+    // Monotonic cumulative distances within route bounds
+    for (let i = 1; i < route.instructions.length; i++) {
+      expect(route.instructions[i].distance).toBeGreaterThanOrEqual(route.instructions[i - 1].distance);
+    }
+    expect(route.instructions[0].icon).toBe('start');
+    expect(route.instructions.at(-1)!.icon).toBe('arrive');
   });
 });
 

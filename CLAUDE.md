@@ -50,6 +50,8 @@ Two routing profiles:
 - **Bike Paths** (`safest`): Uses PBOT A* pathfinding for the core route (renders edge geometry directly), with BRouter for first-mile and last-mile segments connecting start/end to the PBOT network. Falls back to pure BRouter if PBOT path is unavailable.
 - **Direct** (`balanced`): Pure BRouter with `fastbike-lowtraffic` profile.
 
+BRouter requests pass `timode=2`; turn instructions for BRouter-computed segments are parsed from the returned `voicehints` (generic "Turn left/right" — no street names), falling back to `messages` rows, then to basic start/follow/arrive.
+
 PBOT data is always used for route classification/highlighting regardless of profile.
 
 ### Data Flow
@@ -88,7 +90,8 @@ Vite PWA plugin generates service worker (Workbox). OSM tiles cached CacheFirst 
 Tests use vitest with real PBOT data (integration-style) and run fully offline:
 
 - **`src/pbot-graph.test.ts`** — A* pathfinding for specific Portland routes (Morris greenway crossing, Springwater corridor, no river crossings, no backtracking, one-way handling).
-- **`src/router.test.ts`** — Full safest-mode pipeline (A* + gap resolution + first/last-mile stitching) with BRouter responses replayed from `src/__fixtures__/brouter-fixtures.json`. Asserts stitch-boundary continuity, distance/geometry consistency, and instruction well-formedness.
+- **`src/router.test.ts`** — Full safest-mode pipeline (A* + gap resolution + first/last-mile stitching) with BRouter responses replayed from `src/__fixtures__/brouter-fixtures.json`, across a golden-route corpus of 8 city-wide scenarios (`route-scenarios.ts`). Per-scenario invariants: PBOT source used, stitch-boundary continuity, distance/geometry consistency, detour ratio < 2.3× straight-line, ≥70% of coordinates on path/good/lane infrastructure, ≤12% on caution/avoid, instruction well-formedness.
+- **`src/navigation.test.ts`** — Nav engine driven by scripted positions: instruction advancement, off-route detection, arrival, mid-navigation route swap.
 
 Fixtures are recorded via `npx tsx scripts/record-brouter-fixtures.ts` (hits live brouter.de). If routing changes alter which BRouter requests get made, tests fail with a "missing fixture" message — re-record. Scenarios live in `src/route-scenarios.ts`.
 

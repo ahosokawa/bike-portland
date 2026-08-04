@@ -39,6 +39,7 @@ export const httpBRouterFetcher: BRouterFetcher = async (lonlats, profile) => {
     profile,
     alternativeidx: '0',
     format: 'geojson',
+    timode: '2', // emit Locus-style voicehints for turn-by-turn instructions
   });
 
   const res = await fetch(`${BROUTER_URL}?${params}`, { signal: AbortSignal.timeout(15000) });
@@ -493,7 +494,74 @@ function stitchRoutes(
 
 // ========== Instructions parsing (BRouter) ==========
 
+// Locus-style voicehint commands (timode=2). Command 1 (continue straight)
+// is emitted at every through-junction and is filtered out as noise.
+const VOICEHINT_COMMANDS: Record<number, { text: string; icon: string }> = {
+  2:  { text: 'Turn left', icon: 'turn-left' },
+  3:  { text: 'Slight left', icon: 'turn-left' },
+  4:  { text: 'Sharp left', icon: 'turn-left' },
+  5:  { text: 'Turn right', icon: 'turn-right' },
+  6:  { text: 'Slight right', icon: 'turn-right' },
+  7:  { text: 'Sharp right', icon: 'turn-right' },
+  8:  { text: 'Keep left', icon: 'turn-left' },
+  9:  { text: 'Keep right', icon: 'turn-right' },
+  10: { text: 'Make a U-turn', icon: 'u-turn' },
+  11: { text: 'Make a U-turn', icon: 'u-turn' },
+  13: { text: 'Take the roundabout', icon: 'continue' },
+  14: { text: 'Take the roundabout', icon: 'continue' },
+};
+
+/** Build turn instructions from BRouter voicehints (timode=2). */
+function parseVoiceHints(feature: BRouterFeature, hints: number[][]): TurnInstruction[] {
+  const coords = feature.geometry.coordinates;
+  if (coords.length < 2) return [];
+
+  // Cumulative distance along the geometry, for hint positioning
+  const cum: number[] = [0];
+  for (let i = 1; i < coords.length; i++) {
+    cum.push(cum[i - 1] + hav([coords[i - 1][1], coords[i - 1][0]], [coords[i][1], coords[i][0]]));
+  }
+  const total = parseFloat(feature.properties?.['track-length'] ?? '') || cum[cum.length - 1];
+
+  const instructions: TurnInstruction[] = [
+    { text: 'Start your ride', distance: 0, stepDistance: 0, icon: 'start', latlng: [coords[0][1], coords[0][0]] },
+  ];
+
+  let prevDist = 0;
+  for (const hint of hints) {
+    const [idx, command] = hint;
+    const mapped = VOICEHINT_COMMANDS[command];
+    if (!mapped) continue; // skip straight-through hints and unknown commands
+    if (idx < 0 || idx >= coords.length) continue;
+
+    const distance = cum[idx];
+    instructions.push({
+      text: mapped.text,
+      distance,
+      stepDistance: distance - prevDist,
+      icon: mapped.icon,
+      latlng: [coords[idx][1], coords[idx][0]],
+    });
+    prevDist = distance;
+  }
+
+  instructions.push({
+    text: 'Arrive at destination',
+    distance: total,
+    stepDistance: total - prevDist,
+    icon: 'arrive',
+    latlng: [coords[coords.length - 1][1], coords[coords.length - 1][0]],
+  });
+
+  return instructions;
+}
+
 function parseInstructions(feature: BRouterFeature): TurnInstruction[] {
+  const voicehints = feature.properties?.voicehints;
+  if (voicehints && voicehints.length > 0) {
+    return parseVoiceHints(feature, voicehints);
+  }
+
   const instructions: TurnInstruction[] = [];
   const messages = feature.properties?.messages;
 

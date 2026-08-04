@@ -82,6 +82,8 @@ export interface BRouterFeature {
     'filtered ascend'?: string;
     'filtered descend'?: string;
     messages?: string[][];
+    /** Turn hints from timode=2: [coordIndex, command, roundaboutExit, distance, angle] */
+    voicehints?: number[][];
     [key: string]: unknown;
   };
 }
