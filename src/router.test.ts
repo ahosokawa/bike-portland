@@ -16,7 +16,7 @@ import {
   cleanEdgeName,
 } from './router';
 import type { RouteResult } from './types';
-import { haversine, computeDistance } from './geo';
+import { haversine, computeDistance, bearing } from './geo';
 import { SCENARIOS, FIXTURES_PATH, fixtureKey } from './route-scenarios';
 import type { RouteScenario } from './route-scenarios';
 
@@ -105,6 +105,36 @@ describe.each(safestScenarios)('computeGuidedRoute: $name', (scenario) => {
   it('has one elevation entry per coordinate', async () => {
     const route = await computeScenario(scenario);
     expect(route.elevations.length).toBe(route.coordinates.length);
+  });
+
+  it('does not double back at the destination or start', async () => {
+    // Regression: A* snapped to the nearest node even when it sat past the
+    // destination, telling riders to ride by and double back (131° reversal
+    // on Cook→Redd). trimEndOvershoot/trimStartOvershoot cut at the closest
+    // approach instead. Bearings are measured over ≥40m spans so micro
+    // wiggles in street geometry (corners, driveways) don't false-positive.
+    const route = await computeScenario(scenario);
+    const c = route.coordinates;
+    const angleBetween = (b1: number, b2: number) => {
+      const d = Math.abs(b2 - b1) % 360;
+      return d > 180 ? 360 - d : d;
+    };
+
+    // Bearing of the path over ≥40m leading up to the final hop
+    let j = c.length - 2;
+    while (j > 0 && haversine(c[j], c[c.length - 2]) < 40) j--;
+    const endTurn = angleBetween(
+      bearing(c[j], c[c.length - 2]),
+      bearing(c[c.length - 2], c[c.length - 1]),
+    );
+
+    // Bearing of the path over ≥40m following the departure hop
+    let k = 1;
+    while (k < c.length - 1 && haversine(c[1], c[k]) < 40) k++;
+    const startTurn = angleBetween(bearing(c[0], c[1]), bearing(c[1], c[k]));
+
+    expect(endTurn, 'reversal at final approach').toBeLessThan(120);
+    expect(startTurn, 'reversal at departure').toBeLessThan(120);
   });
 
   it('does not detour absurdly', async () => {

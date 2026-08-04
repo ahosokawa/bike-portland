@@ -1,6 +1,6 @@
 import type { LatLng } from 'leaflet';
 import type { RouteResult, TurnInstruction, Waypoint, BRouterFeature } from './types';
-import { haversine as hav, computeDistance, bearing } from './geo';
+import { haversine as hav, computeDistance, bearing, pointToSegProject } from './geo';
 import { findPbotPath } from './pbot-graph';
 import type { PbotEdge, PbotPathResult } from './pbot-graph';
 
@@ -131,6 +131,13 @@ export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<Ro
   // last/first mile from the trimmed endpoint much more cleanly.
   trimLoopyEdges(pbotPath);
 
+  // A* snaps endpoints to the nearest graph node, which can sit past the
+  // destination along the direction of travel — riders would be told to
+  // pass their destination and double back. Cut the path at its closest
+  // approach instead (same for the start).
+  trimEndOvershoot(pbotPath, end.lat, end.lng);
+  trimStartOvershoot(pbotPath, start.lat, start.lng);
+
   // Replace straight-line gap edges with real road geometry from BRouter
   await resolveGapEdges(pbotPath.edges);
 
@@ -203,6 +210,92 @@ function trimLoopyEdges(path: PbotPathResult): void {
     path.startNode = { lat: first.coords[0][0], lng: first.coords[0][1] };
     path.startSnapDist = SNAP_THRESHOLD + 1;
   }
+}
+
+// Only trim an overshoot when it removes at least this much ridden-past path
+const OVERSHOOT_MIN_TRIM = 15; // meters
+
+/** Cut the path's tail at its closest approach to the destination. */
+function trimEndOvershoot(path: PbotPathResult, endLat: number, endLng: number): void {
+  const dest: [number, number] = [endLat, endLng];
+  const startEdge = Math.max(0, path.edges.length - 2); // tail = last 2 edges
+  let best: { ei: number; si: number; point: [number, number]; d: number } | null = null;
+
+  for (let ei = startEdge; ei < path.edges.length; ei++) {
+    const cs = path.edges[ei].coords;
+    for (let si = 0; si < cs.length - 1; si++) {
+      const r = pointToSegProject(dest, cs[si], cs[si + 1]);
+      if (!best || r.distance < best.d) best = { ei, si, point: r.closest, d: r.distance };
+    }
+  }
+  if (!best) return;
+
+  // Path length that would be removed: projection → end of its edge, plus
+  // any following edges. Trim only if the rider actually rides past.
+  const bestEdgeCoords = path.edges[best.ei].coords;
+  let removedLen = computeDistance([best.point, ...bestEdgeCoords.slice(best.si + 1)]);
+  for (let ei = best.ei + 1; ei < path.edges.length; ei++) {
+    removedLen += path.edges[ei].distance;
+  }
+  if (removedLen < OVERSHOOT_MIN_TRIM) return;
+
+  const edge = path.edges[best.ei];
+  const newCoords = edge.coords.slice(0, best.si + 1);
+  if (hav(newCoords[newCoords.length - 1], best.point) > 1) newCoords.push(best.point);
+  path.edges = path.edges.slice(0, best.ei + 1);
+  if (newCoords.length >= 2) {
+    edge.coords = newCoords;
+    edge.distance = computeDistance(newCoords);
+  } else {
+    path.edges.pop();
+  }
+  if (path.edges.length === 0) return;
+
+  const last = path.edges[path.edges.length - 1];
+  const c = last.coords[last.coords.length - 1];
+  path.endNode = { lat: c[0], lng: c[1] };
+  path.endSnapDist = hav(c, dest);
+}
+
+/** Cut the path's head at its closest approach to the start point. */
+function trimStartOvershoot(path: PbotPathResult, startLat: number, startLng: number): void {
+  const src: [number, number] = [startLat, startLng];
+  const endEdge = Math.min(path.edges.length, 2); // head = first 2 edges
+  let best: { ei: number; si: number; point: [number, number]; d: number } | null = null;
+
+  for (let ei = 0; ei < endEdge; ei++) {
+    const cs = path.edges[ei].coords;
+    for (let si = 0; si < cs.length - 1; si++) {
+      const r = pointToSegProject(src, cs[si], cs[si + 1]);
+      if (!best || r.distance < best.d) best = { ei, si, point: r.closest, d: r.distance };
+    }
+  }
+  if (!best) return;
+
+  // Path length that would be removed: start of path → projection point
+  const bestEdgeCoords = path.edges[best.ei].coords;
+  let removedLen = computeDistance([...bestEdgeCoords.slice(0, best.si + 1), best.point]);
+  for (let ei = 0; ei < best.ei; ei++) {
+    removedLen += path.edges[ei].distance;
+  }
+  if (removedLen < OVERSHOOT_MIN_TRIM) return;
+
+  const edge = path.edges[best.ei];
+  // Keep the segment tail from the projection onward (si+1 .. end)
+  const newCoords = edge.coords.slice(best.si + 1);
+  if (newCoords.length === 0 || hav(newCoords[0], best.point) > 1) newCoords.unshift(best.point);
+  path.edges = path.edges.slice(best.ei);
+  if (newCoords.length >= 2) {
+    edge.coords = newCoords;
+    edge.distance = computeDistance(newCoords);
+  } else {
+    path.edges.shift();
+  }
+  if (path.edges.length === 0) return;
+
+  const c = path.edges[0].coords[0];
+  path.startNode = { lat: c[0], lng: c[1] };
+  path.startSnapDist = hav(c, src);
 }
 
 /** Replace straight-line gap-bridge edge coords with real road geometry. */
