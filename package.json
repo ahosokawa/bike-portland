@@ -13,16 +13,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ahosokawa/bike-portland.git"
+    "url": "git+https://github.com/ahosokawa/pedalpdx.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "bugs": {
-    "url": "https://github.com/ahosokawa/bike-portland/issues"
+    "url": "https://github.com/ahosokawa/pedalpdx/issues"
   },
-  "homepage": "https://github.com/ahosokawa/bike-portland#readme",
+  "homepage": "https://github.com/ahosokawa/pedalpdx#readme",
   "devDependencies": {
     "@types/leaflet": "^1.9.21",
     "@types/node": "^26.1.2",

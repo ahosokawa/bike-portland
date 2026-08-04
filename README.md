@@ -2,7 +2,7 @@
 
 A mobile-first PWA for bike-friendly routing in Portland, OR. Combines official PBOT bicycle infrastructure data with OpenStreetMap's street network into a routing graph that ships with the app, so routes preferring protected bike lanes, neighborhood greenways, and multi-use paths are computed instantly, on your phone, with no server and no connection required.
 
-**[Learn more](https://ahosokawa.github.io/bike-portland/info/)** · **[Open the app](https://ahosokawa.github.io/bike-portland/)**
+**[Learn more](https://ahosokawa.github.io/pedalpdx/info/)** · **[Open the app](https://ahosokawa.github.io/pedalpdx/)**
 
 ## Features
 
@@ -61,7 +61,7 @@ URL parameters for fast testing without tapping through the UI or riding a bike:
 Example — simulate riding Cook St → The Redd with debug overlay:
 
 ```
-http://localhost:5173/bike-portland/?from=45.54736,-122.66082&to=45.51459,-122.65699&sim=auto&debug=1
+http://localhost:5173/pedalpdx/?from=45.54736,-122.66082&to=45.51459,-122.65699&sim=auto&debug=1
 ```
 
 The URL updates as you plan routes manually, so any route you see can be shared or re-loaded by copying the address bar.

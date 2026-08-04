@@ -65,7 +65,7 @@ async function fetchOsm(): Promise<OverpassWay[]> {
       'Content-Type': 'application/x-www-form-urlencoded',
       // Overpass returns 406 to Node's default fetch headers
       'Accept': 'application/json',
-      'User-Agent': 'PedalPDX-spike/1.0 (github.com/ahosokawa/bike-portland)',
+      'User-Agent': 'PedalPDX-spike/1.0 (github.com/ahosokawa/pedalpdx)',
     },
   });
   if (!res.ok) throw new Error(`Overpass error: ${res.status} ${res.statusText}`);

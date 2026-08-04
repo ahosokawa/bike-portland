@@ -2,8 +2,12 @@ import { resolve } from 'path';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+/** Path the site is served from — the GitHub Pages project name.
+ *  Single source of truth: everything below derives from it. */
+const BASE = '/pedalpdx/';
+
 export default defineConfig({
-  base: '/bike-portland/',
+  base: BASE,
   appType: 'mpa',
   root: 'src',
   publicDir: '../public',
@@ -22,8 +26,8 @@ export default defineConfig({
       name: 'trailing-slash-redirect',
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
-          if (req.url === '/bike-portland/info') {
-            res.writeHead(301, { Location: '/bike-portland/info/' });
+          if (req.url === `${BASE}info`) {
+            res.writeHead(301, { Location: `${BASE}info/` });
             res.end();
             return;
           }
@@ -40,7 +44,7 @@ export default defineConfig({
         theme_color: '#2d8a4e',
         background_color: '#ffffff',
         display: 'standalone',
-        start_url: '/bike-portland/',
+        start_url: BASE,
         icons: [
           { src: 'favicon.ico', sizes: '16x16 32x32', type: 'image/x-icon' },
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
@@ -54,7 +58,7 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024, // 6MB for PBOT geojson
         skipWaiting: true,
         clientsClaim: true,
-        navigateFallbackDenylist: [/^\/bike-portland\/info/],
+        navigateFallbackDenylist: [new RegExp(`^${BASE}info`)],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/[abc]\.tile\.openstreetmap\.org\/.*/,

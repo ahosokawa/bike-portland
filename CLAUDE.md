@@ -102,7 +102,7 @@ The project is a Vite MPA (`appType: 'mpa'`) with two entry points:
 - **`src/index.html`** — The main PWA app
 - **`src/info/index.html`** — Informational landing page for prospective users (static HTML + CSS, no JS)
 
-Both are built via `rollupOptions.input` and deployed together. The info page lives at `/bike-portland/info/`. A dev-only Vite plugin handles trailing-slash redirects for `/info` → `/info/`. The service worker's `navigateFallbackDenylist` prevents the app shell from intercepting `/info/` requests.
+Both are built via `rollupOptions.input` and deployed together. The info page lives at `/pedalpdx/info/`. A dev-only Vite plugin handles trailing-slash redirects for `/info` → `/info/`. The service worker's `navigateFallbackDenylist` prevents the app shell from intercepting `/info/` requests.
 
 ### PWA & Offline
 
@@ -130,7 +130,7 @@ Gotcha: PBOT edge geometry is simplified at fetch time, so consecutive route coo
 
 ## Build & Deploy
 
-- Vite MPA with base path `/bike-portland/` (GitHub Pages subdirectory)
+- Vite MPA with base path `/pedalpdx/` (GitHub Pages subdirectory)
 - Two entry points: `src/index.html` (app) and `src/info/index.html` (landing page)
 - TypeScript target: ES2020, strict mode, bundler module resolution
 - Push to `main` triggers GitHub Actions → `npm ci && npm run build` → deploys dist/ to GitHub Pages

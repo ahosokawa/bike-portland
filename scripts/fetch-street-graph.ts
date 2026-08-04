@@ -77,7 +77,7 @@ async function overpass(query: string, cacheName: string): Promise<unknown[]> {
       'Content-Type': 'application/x-www-form-urlencoded',
       // Overpass rejects Node's default fetch headers with 406
       'Accept': 'application/json',
-      'User-Agent': 'PedalPDX/1.0 (github.com/ahosokawa/bike-portland)',
+      'User-Agent': 'PedalPDX/1.0 (github.com/ahosokawa/pedalpdx)',
     },
   });
   if (!res.ok) throw new Error(`Overpass ${cacheName} failed: ${res.status} ${res.statusText}`);
