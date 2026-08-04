@@ -111,6 +111,8 @@ const TIER_FROM_HW: Record<string, InfraTier> = {
 export interface RouteStep {
   edge: number;
   forward: boolean;
+  /** Index into `coordinates` where this step's geometry begins. */
+  coordIndex: number;
 }
 
 export interface StreetRoute {
@@ -313,6 +315,11 @@ export class StreetGraph {
 
   edgeName(e: number): string {
     return this.names[this.ename[e]] ?? '';
+  }
+
+  /** OSM highway class of an edge (e.g. "residential", "cycleway"). */
+  edgeHighway(e: number): string {
+    return this.hws[this.ehw[e]] ?? '';
   }
 
   edgeTier(e: number): InfraTier {
@@ -572,8 +579,8 @@ export class StreetGraph {
 
     const startForward = firstNode === this.eb[s.edge];
     const startCoords = trimEdge(this.edgeCoords(s.edge), s.point, startForward ? 'after' : 'before');
+    steps.push({ edge: s.edge, forward: startForward, coordIndex: 0 });
     pushRun(coordinates, startForward ? startCoords : startCoords.reverse());
-    steps.push({ edge: s.edge, forward: startForward });
     names.push(this.edgeName(s.edge));
     fillTiers(tiers, coordinates.length, this.edgeTier(s.edge));
 
@@ -581,8 +588,8 @@ export class StreetGraph {
     for (const e of path) {
       const forward = this.ea[e] === node;
       const coords = this.edgeCoords(e);
+      steps.push({ edge: e, forward, coordIndex: Math.max(0, coordinates.length - 1) });
       pushRun(coordinates, forward ? coords : coords.slice().reverse());
-      steps.push({ edge: e, forward });
       names.push(this.edgeName(e));
       fillTiers(tiers, coordinates.length, this.edgeTier(e));
       node = forward ? this.eb[e] : this.ea[e];
@@ -591,8 +598,8 @@ export class StreetGraph {
     // Final edge: enter at `node`, stop at the destination snap point
     const endForward = node === this.ea[t.edge];
     const endCoords = trimEdge(this.edgeCoords(t.edge), t.point, endForward ? 'before' : 'after');
+    steps.push({ edge: t.edge, forward: endForward, coordIndex: Math.max(0, coordinates.length - 1) });
     pushRun(coordinates, endForward ? endCoords : endCoords.slice().reverse());
-    steps.push({ edge: t.edge, forward: endForward });
     names.push(this.edgeName(t.edge));
     fillTiers(tiers, coordinates.length, this.edgeTier(t.edge));
 
@@ -618,7 +625,7 @@ export class StreetGraph {
       coordinates: out,
       tiers: out.map(() => tier),
       distance: computeDistance(out),
-      steps: [{ edge: s.edge, forward }],
+      steps: [{ edge: s.edge, forward, coordIndex: 0 }],
       names: [this.edgeName(s.edge)],
     };
   }
