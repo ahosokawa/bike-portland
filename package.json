@@ -6,7 +6,8 @@
     "dev": "vite --config vite.config.ts",
     "build": "vite build --config vite.config.ts",
     "preview": "vite preview --config vite.config.ts",
-    "fetch-data": "npx tsx scripts/fetch-pbot-data.ts && npx tsx scripts/fetch-busy-roads.ts",
+    "fetch-data": "npx tsx scripts/fetch-pbot-data.ts && npx tsx scripts/fetch-busy-roads.ts && npx tsx scripts/fetch-street-graph.ts",
+    "fetch-graph": "npx tsx scripts/fetch-street-graph.ts",
     "fetch-busy-roads": "npx tsx scripts/fetch-busy-roads.ts",
     "test": "vitest run",
     "test:watch": "vitest"
