@@ -22,7 +22,6 @@ import { fetchStreetGraph } from './street-graph';
 import type { RouteProfileKey } from './router';
 import { initSearch, reverseGeocode, setSearchBias } from './search';
 import { getCurrentPosition } from './geolocation';
-import { drawElevationProfile } from './elevation';
 import { loadPbotData, togglePbotLayer } from './pbot-layer';
 import { startNavigation, stopNavigation, isNavigating, updateRoute, announce } from './navigation';
 import {
@@ -52,7 +51,7 @@ const state: AppState = {
 //   ?from=lat,lng&to=lat,lng[&profile=safest|balanced] — load a route on startup
 //   ?sim=1  — navigation uses a fake-GPS ride simulator instead of real GPS
 //   ?sim=auto — same, and navigation auto-starts once the URL route loads
-//   ?debug=1 — draw route internals (gap edges, stitch points) + console dump
+//   ?debug=1 — mark where endpoints snapped onto the network + console dump
 const urlParams = new URLSearchParams(location.search);
 const devSim = urlParams.has('sim');
 const devDebug = urlParams.has('debug');
@@ -624,7 +623,6 @@ function showRoutePanel(route: RouteResult): void {
 
   const miles = (route.distance / METERS_PER_MILE).toFixed(1);
   const minutes = Math.round(route.time / 60);
-  const ascendFt = Math.round(route.ascend * FEET_PER_METER);
 
   $('route-summary').innerHTML = `
     <div class="stat">
@@ -635,20 +633,7 @@ function showRoutePanel(route: RouteResult): void {
       <span class="stat-value">${minutes} min</span>
       <span class="stat-label">Est. Time</span>
     </div>
-    ${route.hasElevation ? `<div class="stat">
-      <span class="stat-value">${ascendFt} ft</span>
-      <span class="stat-label">Climbing</span>
-    </div>` : ''}
   `;
-
-  const elevationEl = $('elevation-profile');
-  if (route.hasElevation) {
-    elevationEl.classList.remove('hidden');
-    drawElevationProfile(route.elevations, elevationEl);
-  } else {
-    elevationEl.classList.add('hidden');
-    elevationEl.innerHTML = '';
-  }
 
   const directionsHtml = route.instructions
     .map(

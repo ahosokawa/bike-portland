@@ -370,17 +370,6 @@ body::after {
 }
 
 /* Elevation profile */
-#elevation-profile {
-  margin: 12px 0;
-  height: 80px;
-  position: relative;
-}
-
-#elevation-profile canvas {
-  width: 100%;
-  height: 100%;
-}
-
 /* Turn directions */
 #turn-directions {
   font-size: 13px;

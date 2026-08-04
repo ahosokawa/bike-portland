@@ -54,11 +54,6 @@ function toRouteResult(g: StreetGraph, route: StreetRoute, profile: RouteProfile
     tiers: route.tiers,
     distance: route.distance,
     time: Math.round(route.distance / CYCLING_SPEED),
-    // No elevation in the graph yet — the profile chart stays hidden.
-    elevations: route.coordinates.map(() => 0),
-    ascend: 0,
-    descend: 0,
-    hasElevation: false,
     instructions,
     debug: {
       source: 'street-graph',
@@ -132,10 +127,6 @@ export async function computeRouteMulti(
     tiers,
     distance,
     time: Math.round(distance / CYCLING_SPEED),
-    elevations: coordinates.map(() => 0),
-    ascend: 0,
-    descend: 0,
-    hasElevation: false,
     instructions,
     debug: { source: 'street-graph', profile: currentProfile, steps: 0, snapPoints: [] },
   };

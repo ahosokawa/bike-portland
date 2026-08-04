@@ -44,7 +44,6 @@ the committed artifact.
 - **custom-route-builder.ts** — Multi-waypoint route creation with live preview
 - **search.ts** — Address search via Photon API, reverse geocoding, viewport-biased results
 - **saved-routes.ts** — IndexedDB persistence for custom routes with offline caching, home address storage
-- **elevation.ts** — Canvas-based elevation profile visualization
 - **geo.ts** — Shared geographic utilities (haversine, bearing, point-to-segment projection, unit conversion constants)
 - **icons.ts** — SVG icon generation for turn instructions
 - **types.ts** — Shared TypeScript interfaces

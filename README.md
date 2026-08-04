@@ -115,7 +115,6 @@ src/
   custom-route-builder.ts Multi-waypoint route creation with live preview
   saved-routes.ts         IndexedDB persistence for saved routes
   search.ts               Photon address search, reverse geocoding
-  elevation.ts            Canvas-based elevation profile chart
   geo.ts                  Shared geographic utilities (haversine, bearing, projection, unit constants)
   icons.ts                SVG icon generation
   geolocation.ts          Device GPS wrapper
@@ -137,12 +136,6 @@ public/
   data/street-graph.json    Routing graph (3.7 MB, 1.2 MB gzipped)
   icons/                    PWA icons
 ```
-
-## Known Gaps
-
-- **No elevation profile.** Moving routing on-device removed the elevation data
-  that came from the old routing server. Restoring it means sampling a digital
-  elevation model per graph node at build time — planned, not yet done.
 
 ## License
 

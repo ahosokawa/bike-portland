@@ -8,10 +8,6 @@ export interface RouteResult {
   tiers: InfraTier[];
   distance: number; // meters
   time: number; // seconds
-  elevations: number[]; // meters, one per coordinate
-  ascend: number; // total meters gained
-  descend: number; // total meters descended
-  hasElevation: boolean; // false until the graph carries elevation data
   instructions: TurnInstruction[];
   debug?: RouteDebugInfo; // populated for dev inspection (?debug=1)
 }
@@ -69,20 +65,4 @@ export interface HomeAddress {
   lat: number;
   lng: number;
   displayName: string;
-}
-
-export interface BRouterFeature {
-  geometry: {
-    coordinates: number[][];
-  };
-  properties: {
-    'track-length'?: string;
-    'total-time'?: string;
-    'filtered ascend'?: string;
-    'filtered descend'?: string;
-    messages?: string[][];
-    /** Turn hints from timode=2: [coordIndex, command, roundaboutExit, distance, angle] */
-    voicehints?: number[][];
-    [key: string]: unknown;
-  };
 }
