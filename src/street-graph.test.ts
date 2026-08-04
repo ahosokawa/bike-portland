@@ -151,6 +151,63 @@ describe('safest profile route quality', () => {
   });
 });
 
+describe('cost model', () => {
+  // PBOT tags a "difficult connection" on roads like NE Lombard (a primary
+  // truck route) and NW Skyline. Reading those tags at face value priced
+  // Lombard at 2.2x instead of the 16x its road class implies — the warning
+  // made the router prefer the road it warns about. 1,478 edges were affected.
+  const HAZARDS = ['DC', 'SR_DC', 'BL-DC', 'SR_MT-DC', 'SR_MT', 'BL_VHT'];
+
+  it.each(['safest', 'balanced'] as const)(
+    'never lets a difficulty flag make a road cheaper than its class (%s)',
+    (profile) => {
+      let checked = 0;
+      for (let e = 0; e < graph.edgeCount; e++) {
+        const ct = graph.edgeConnectionType(e);
+        if (!ct || !HAZARDS.includes(ct)) continue;
+        checked++;
+        const withTag = graph.edgeWeight(e, profile);
+        // An untagged edge of the same class is the floor
+        const bare = BARE_WEIGHTS[profile][graph.edgeHighway(e)];
+        if (bare === undefined) continue;
+        expect(
+          withTag,
+          `${ct} on ${graph.edgeHighway(e)} ("${graph.edgeName(e)}")`,
+        ).toBeGreaterThanOrEqual(bare);
+      }
+      expect(checked, 'corpus should contain hazard-tagged edges').toBeGreaterThan(500);
+    },
+  );
+
+  it('still lets real bike infrastructure improve a busy road', () => {
+    // A buffered bike lane on N Lombard should beat the bare primary class,
+    // otherwise conflation buys us nothing.
+    let found = 0;
+    for (let e = 0; e < graph.edgeCount; e++) {
+      if (graph.edgeConnectionType(e) !== 'BBL') continue;
+      if (graph.edgeHighway(e) !== 'primary') continue;
+      found++;
+      expect(graph.edgeWeight(e, 'safest')).toBeLessThan(
+        BARE_WEIGHTS.safest.primary,
+      );
+    }
+    expect(found).toBeGreaterThan(0);
+  });
+});
+
+// Mirrors HW_WEIGHTS in street-graph.ts — an independent copy so the test
+// fails if those values drift rather than moving with them.
+const BARE_WEIGHTS: Record<'safest' | 'balanced', Record<string, number>> = {
+  safest: {
+    primary: 16.0, primary_link: 16.0, secondary: 9.0, secondary_link: 9.0,
+    tertiary: 4.0, tertiary_link: 4.0, residential: 1.4, unclassified: 1.8,
+  },
+  balanced: {
+    primary: 3.2, primary_link: 3.2, secondary: 2.2, secondary_link: 2.2,
+    tertiary: 1.3, tertiary_link: 1.3, residential: 1.0, unclassified: 1.05,
+  },
+};
+
 describe('legal and sensible riding', () => {
   it.each(SCENARIOS)('$name never rides the wrong way down a one-way', (scenario) => {
     const route = graph.route(scenario.from, scenario.to, scenario.profile)!;

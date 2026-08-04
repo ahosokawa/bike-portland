@@ -74,6 +74,19 @@ const HW_WEIGHTS: Record<RouteProfile, Record<string, number>> = {
 
 const DEFAULT_WEIGHT = 2.0;
 
+/**
+ * PBOT tags that describe a *difficulty* rather than a bike facility.
+ *
+ * These must never make a road cheaper than its OSM class alone would: PBOT
+ * flags NE Lombard as "bike lane, difficult connection" and NW Skyline as
+ * "shared road, difficult connection", and taking those tags at face value
+ * priced a primary truck route at 2.2x instead of 16x — the warning was making
+ * the router *prefer* the road it warns about. Facility tags (a real bike lane,
+ * greenway or path) still win, since infrastructure genuinely does improve an
+ * arterial.
+ */
+const HAZARD_TAGS = new Set(['DC', 'SR_DC', 'BL-DC', 'SR_MT-DC', 'SR_MT', 'BL_VHT']);
+
 /** Smallest weight in use — keeps the A* heuristic admissible. */
 const MIN_WEIGHT = 0.15;
 
@@ -334,6 +347,17 @@ export class StreetGraph {
     return this.eoneway[e];
   }
 
+  /** PBOT ConnectionType carried by an edge, or null where it has none. */
+  edgeConnectionType(e: number): string | null {
+    const ct = this.ect[e];
+    return ct >= 0 ? this.cts[ct] : null;
+  }
+
+  /** Cost multiplier applied per metre of this edge (exposed for tests/debug). */
+  edgeWeight(e: number, profile: RouteProfile = 'safest'): number {
+    return this.weight(e, profile);
+  }
+
   edgeTier(e: number): InfraTier {
     const ct = this.ect[e];
     if (ct >= 0) {
@@ -344,12 +368,15 @@ export class StreetGraph {
   }
 
   private weight(e: number, profile: RouteProfile): number {
+    const hwWeight = HW_WEIGHTS[profile][this.hws[this.ehw[e]]] ?? DEFAULT_WEIGHT;
     const ct = this.ect[e];
-    if (ct >= 0) {
-      const w = PBOT_WEIGHTS[profile][this.cts[ct]];
-      if (w !== undefined) return w;
-    }
-    return HW_WEIGHTS[profile][this.hws[this.ehw[e]]] ?? DEFAULT_WEIGHT;
+    if (ct < 0) return hwWeight;
+
+    const tag = this.cts[ct];
+    const w = PBOT_WEIGHTS[profile][tag];
+    if (w === undefined) return hwWeight;
+    // A difficulty flag can only make a road worse, never better
+    return HAZARD_TAGS.has(tag) ? Math.max(w, hwWeight) : w;
   }
 
   /** Cost of passing through `node` from edge `from` onto edge `to`. */
