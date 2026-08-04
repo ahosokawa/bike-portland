@@ -44,7 +44,7 @@ export function indexBusyRoads(geojson: BusyRoadsFeatureCollection): void {
   const _grid = new Map<string, number[]>();
 
   for (const f of geojson.features) {
-    const coords: number[][] = f.geometry?.coordinates;
+    const coords = f.geometry?.coordinates;
     if (!coords || coords.length < 2) continue;
     const highway: string = f.properties?.highway || '';
 
@@ -81,7 +81,7 @@ export function indexBusyRoads(geojson: BusyRoadsFeatureCollection): void {
     const oneway = f.properties?.oneway;
     if (oneway !== 'yes' && oneway !== '-1') continue;
 
-    const coords: number[][] = f.geometry?.coordinates;
+    const coords = f.geometry?.coordinates;
     if (!coords || coords.length < 2) continue;
 
     for (let i = 0; i < coords.length - 1; i++) {

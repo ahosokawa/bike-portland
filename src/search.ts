@@ -330,7 +330,7 @@ function isNamedPlace(p: PhotonProperties): boolean {
 /** Primary display name for a result or reverse geocode. */
 function formatName(p: PhotonProperties): string {
   // Named place: "Laurelhurst Theater", "Peninsula Park"
-  if (isNamedPlace(p)) return p.name;
+  if (isNamedPlace(p)) return p.name!;
   // Street address: "431 Northeast Cook Street"
   if (p.housenumber && p.street) return `${p.housenumber} ${p.street}`;
   // Street only
