@@ -52,6 +52,39 @@ describe('graph artifact', () => {
   it('returns null when snapping far outside the covered area', () => {
     expect(graph.snap(44.0, -120.0)).toBeNull(); // central Oregon
   });
+
+  it('never snaps onto an island cut off from the street network', () => {
+    // OSM footpath islands (parking-lot walkways, mall paths) are the nearest
+    // geometry to plenty of real destinations. Snapping to one used to make
+    // routing fail outright, so check that no island edge can be snapped to —
+    // sampled from the islands themselves, where a naive snap would land.
+    let sampled = 0;
+    for (let e = 0; e < graph.edgeCount && sampled < 200; e++) {
+      if (graph.edgeReachable(e)) continue;
+      sampled++;
+      const coords = graph.edgeCoords(e);
+      const mid = coords[Math.floor(coords.length / 2)];
+      const snap = graph.snap(mid[0], mid[1]);
+      if (snap) expect(graph.edgeReachable(snap.edge), `snapped to island edge ${snap.edge}`).toBe(true);
+    }
+    expect(sampled, 'artifact should contain island edges to sample').toBeGreaterThan(50);
+  });
+
+  it('routes to a store whose pin sits in its parking lot', () => {
+    // Fred Meyer on NE Weidler: the pin is 92m from a three-edge footpath
+    // island in the lot and 161m from the nearest street.
+    const snap = graph.snap(PLACES.FRED_MEYER_HOLLYWOOD.lat, PLACES.FRED_MEYER_HOLLYWOOD.lng);
+    expect(snap).not.toBeNull();
+    expect(graph.edgeReachable(snap!.edge)).toBe(true);
+    expect(snap!.distance).toBeLessThan(250);
+
+    const route = graph.route(PLACES.COOK_431, PLACES.FRED_MEYER_HOLLYWOOD, 'safest');
+    expect(route, 'route to a parking-lot pin should be found').not.toBeNull();
+    expect(haversine(
+      route!.coordinates[route!.coordinates.length - 1],
+      [PLACES.FRED_MEYER_HOLLYWOOD.lat, PLACES.FRED_MEYER_HOLLYWOOD.lng],
+    )).toBeLessThan(250);
+  });
 });
 
 describe.each(SCENARIOS)('route: $name', (scenario) => {

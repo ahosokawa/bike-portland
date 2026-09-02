@@ -170,6 +170,8 @@ export class StreetGraph {
 
   private nodeClass: Int8Array;  // highest road class incident to the node
   private nodeSignal: Uint8Array;
+  private nodeComp: Int32Array;  // connected-component id per node
+  private mainComp = 0;          // the component holding the street network
 
   private names: string[];
   private hws: string[];
@@ -295,6 +297,38 @@ export class StreetGraph {
       }
     }
 
+    // --- connected components ---
+    // OSM carries plenty of footpath islands: the walkways inside a shopping
+    // centre's parking lot, mall paths, private campus loops. They touch no
+    // street (sidewalks and crossings are deliberately not in the graph), so
+    // anything that snaps onto one can never be routed. About 17% of nodes sit
+    // in such islands, and a supermarket's map pin lands on one often enough
+    // that snapping has to know which edges are actually reachable.
+    const parent = new Int32Array(nodeCount);
+    for (let i = 0; i < nodeCount; i++) parent[i] = i;
+    const find = (x: number): number => {
+      let root = x;
+      while (parent[root] !== root) root = parent[root];
+      while (parent[x] !== root) { const next = parent[x]; parent[x] = root; x = next; }
+      return root;
+    };
+    for (let e = 0; e < edgeCount; e++) {
+      // Union undirected: a one-way still connects the places it joins.
+      const ra = find(this.ea[e]);
+      const rb = find(this.eb[e]);
+      if (ra !== rb) parent[ra] = rb;
+    }
+    this.nodeComp = new Int32Array(nodeCount);
+    const compSize = new Int32Array(nodeCount);
+    for (let i = 0; i < nodeCount; i++) {
+      const root = find(i);
+      this.nodeComp[i] = root;
+      compSize[root]++;
+    }
+    for (let i = 0; i < nodeCount; i++) {
+      if (compSize[i] > compSize[this.mainComp]) this.mainComp = i;
+    }
+
     // --- spatial index for snapping ---
     // Every cell the geometry passes through is indexed, not just the cells
     // holding vertices: a straight block can span several cells with no
@@ -367,6 +401,12 @@ export class StreetGraph {
     return TIER_FROM_HW[this.hws[this.ehw[e]]] ?? 'none';
   }
 
+  /** Whether an edge is part of the connected street network (see the
+   *  component pass in the constructor) rather than an unreachable island. */
+  edgeReachable(e: number): boolean {
+    return this.nodeComp[this.ea[e]] === this.mainComp;
+  }
+
   private weight(e: number, profile: RouteProfile): number {
     const hwWeight = HW_WEIGHTS[profile][this.hws[this.ehw[e]]] ?? DEFAULT_WEIGHT;
     const ct = this.ect[e];
@@ -424,7 +464,9 @@ export class StreetGraph {
       : bearing([this.coordLat[end - 1], this.coordLng[end - 1]], [this.coordLat[end], this.coordLng[end]]);
   }
 
-  /** Nearest ridable edge to a point, with the projected position along it. */
+  /** Nearest ridable edge to a point, with the projected position along it.
+   *  Only edges on the connected network are considered — snapping to an
+   *  island (a parking-lot footpath, say) yields a point nothing can reach. */
   snap(lat: number, lng: number, maxDist = 500): SnapPoint | null {
     const bLat = Math.floor(lat * GRID);
     const bLng = Math.floor(lng * GRID);
@@ -439,6 +481,7 @@ export class StreetGraph {
           const cell = this.grid.get(`${bLat + dl},${bLng + dn}`);
           if (!cell) continue;
           for (const e of cell) {
+            if (!this.edgeReachable(e)) continue;
             const start = this.ecoordStart[e];
             const end = this.ecoordStart[e + 1];
             let along = 0;

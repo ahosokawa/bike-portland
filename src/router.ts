@@ -79,6 +79,10 @@ export async function computeGuidedRoute(start: LatLng, end: LatLng): Promise<Ro
     ROUTE_PROFILES[currentProfile].profile as RouteProfile,
   );
   if (!route) {
+    // Distinguish "nowhere ridable nearby" from "nearby but no path" — the
+    // first is what a destination outside the covered area looks like.
+    if (!g.snap(start.lat, start.lng)) throw new Error('No bikeable street near the starting point');
+    if (!g.snap(end.lat, end.lng)) throw new Error('No bikeable street near the destination');
     throw new Error('No bike route found between those points');
   }
   return toRouteResult(g, route, currentProfile);

@@ -24,6 +24,7 @@ export const PLACES = {
   LAURELHURST_PARK: { lat: 45.5210, lng: -122.6262 },
   KENTON: { lat: 45.5830, lng: -122.6875 },              // N Denver Ave
   MISSISSIPPI_SKIDMORE: { lat: 45.5525, lng: -122.6755 },
+  FRED_MEYER_HOLLYWOOD: { lat: 45.532897, lng: -122.634848 }, // pin sits inside the store's parking lot
 } as const;
 
 export const SCENARIOS: RouteScenario[] = [

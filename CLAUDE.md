@@ -70,7 +70,10 @@ Both endpoints snap to the nearest **edge**, not the nearest node, and the
 geometry is trimmed to the projected position — so routes start and end where
 the rider actually is. A* is seeded at both ends of the start edge and may
 finish at either end of the destination edge, so it naturally picks the
-approach that doesn't require doubling back.
+approach that doesn't require doubling back. Snapping only considers edges in
+the graph's largest connected component — OSM parking-lot and mall footpaths
+form islands that touch no street, and a store's map pin lands nearest one
+often enough that snapping there made routing fail.
 
 ### Data Flow
 
